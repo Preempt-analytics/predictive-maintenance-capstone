@@ -20,4 +20,3 @@ requests
 schedule
 plotly
 tqdm
-scikit-image imagecodecs
