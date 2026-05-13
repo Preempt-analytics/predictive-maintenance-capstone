@@ -11,8 +11,6 @@ jupyterlab==3.6.3
 statsmodels==0.14.0
 pytest==7.4.0
 mlflow==3.11.1
-pre-commit>=3.7
-ruff==0.0.241
 testbook==0.4.2
 parsenvy==3.0.2
 black==23.3.0
