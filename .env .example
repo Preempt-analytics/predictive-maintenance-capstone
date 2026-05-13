@@ -1,0 +1,6 @@
+# DagsHub MLflow credentials
+# Each team member fills in their own values. See README for how to obtain a PAT.
+
+MLFLOW_TRACKING_URI=
+MLFLOW_TRACKING_USERNAME=
+MLFLOW_TRACKING_PASSWORD=
