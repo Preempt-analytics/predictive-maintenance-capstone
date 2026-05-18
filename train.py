@@ -17,13 +17,28 @@ load_dotenv()
 DATA_PATH = Path("data/ai4i2020.csv")
 WEAR_LIMITS = {"L": 200, "M": 220, "H": 240}
 
+COLUMN_RENAME = {
+    "Type": "type",
+    "Air temperature [K]": "air_temperature_k",
+    "Process temperature [K]": "process_temperature_k",
+    "Rotational speed [rpm]": "rotational_speed_rpm",
+    "Torque [Nm]": "torque_nm",
+    "Tool wear [min]": "tool_wear_min",
+    "Machine failure": "machine_failure",
+    "TWF": "twf",
+    "HDF": "hdf",
+    "PWF": "pwf",
+    "OSF": "osf",
+    "RNF": "rnf",
+}
+
 FEATURES = [
-    "Type",
-    "Air temperature [K]",
-    "Process temperature [K]",
-    "Rotational speed [rpm]",
-    "Torque [Nm]",
-    "Tool wear [min]",
+    "type",
+    "air_temperature_k",
+    "process_temperature_k",
+    "rotational_speed_rpm",
+    "torque_nm",
+    "tool_wear_min",
     "temp_diff",
     "power",
     "overstrain",
@@ -49,7 +64,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
     "xgb_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/xgboost/binary",
         registered_model_name="predictive-maintenance-xgb-binary",
-        target="Machine failure",
+        target="machine_failure",
         target_type="binary",
         model_family="xgboost",
     ),
@@ -78,23 +93,23 @@ def load_data() -> pd.DataFrame:
 # ── Preprocessing ──────────────────────────────────────────────────────────────
 
 def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
-    df = df.copy()
-    df["temp_diff"] = df["Process temperature [K]"] - df["Air temperature [K]"]
-    df["power"] = df["Torque [Nm]"] * df["Rotational speed [rpm]"]
-    df["overstrain"] = df["Torque [Nm]"] * df["Tool wear [min]"]
-    df["rpm_torque_ratio"] = df["Rotational speed [rpm]"] / df["Torque [Nm]"]
+    df = df.copy().rename(columns=COLUMN_RENAME)
+    df["temp_diff"] = df["process_temperature_k"] - df["air_temperature_k"]
+    df["power"] = df["torque_nm"] * df["rotational_speed_rpm"]
+    df["overstrain"] = df["torque_nm"] * df["tool_wear_min"]
+    df["rpm_torque_ratio"] = df["rotational_speed_rpm"] / df["torque_nm"]
     df["wear_pct"] = df.apply(
-        lambda r: r["Tool wear [min]"] / WEAR_LIMITS[r["Type"]], axis=1
+        lambda r: r["tool_wear_min"] / WEAR_LIMITS[r["type"]], axis=1
     )
     df["in_safe_power_band"] = df["power"].between(3500, 9000).astype(int)
     df["hdf_risk"] = (
-        (df["temp_diff"] < 8.6) & (df["Rotational speed [rpm]"] < 1380)
+        (df["temp_diff"] < 8.6) & (df["rotational_speed_rpm"] < 1380)
     ).astype(int)
 
     # For multiclass: collapse the five failure-type columns into one label column.
     # "none" when no failure type is flagged; the specific type otherwise.
     if config.target_type == "multiclass":
-        failure_cols = ["TWF", "HDF", "PWF", "OSF", "RNF"]
+        failure_cols = ["twf", "hdf", "pwf", "osf", "rnf"]
         def resolve_label(row):
             active = [c for c in failure_cols if row[c] == 1]
             return active[0] if active else "none"

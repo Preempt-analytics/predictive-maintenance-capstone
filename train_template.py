@@ -26,6 +26,25 @@ load_dotenv()
 
 DATA_PATH = Path("data/ai4i2020.csv")
 
+# Import dataset using the relative path above. 
+# Adjust this part if the data intake changes (e.g. if you switch to a database or an API instead of a CSV file).
+df = pd.read_csv(DATA_PATH)
+
+COLUMN_RENAME = {
+    "Type": "type",
+    "Air temperature [K]": "air_temperature_k",
+    "Process temperature [K]": "process_temperature_k",
+    "Rotational speed [rpm]": "rotational_speed_rpm",
+    "Torque [Nm]": "torque_nm",
+    "Tool wear [min]": "tool_wear_min",
+    "Machine failure": "machine_failure",
+    "TWF": "twf",
+    "HDF": "hdf",
+    "PWF": "pwf",
+    "OSF": "osf",
+    "RNF": "rnf",
+}
+
 
 # ── 1. Experiment registry ─────────────────────────────────────────────────────
 #
@@ -138,23 +157,16 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 #     resources to do so. By engineering derived features based on domain knowledge, we can provide the 
 #     model with more informative inputs that may lead to better performance and faster convergence during training.
 
-FEATURES = [
-    # TODO: 
-    # Air temperature [K]	Process temperature [K]	Rotational speed [rpm]	Torque [Nm]	Tool wear [min]	Machine failure	TWF	HDF	PWF	OSF	RNF
-   
-   
-   
-	Machine failure	TWF	HDF	PWF	OSF	RNF
-    
-]  
-
+# Define the features to be used for training the model 
+# and relabel them to be more code-friendly (no spaces, lowercase, etc.)
 
 FEATURES = [
-    "Air temperature [K]",
-    "Process temperature [K]",
-    "Rotational speed [rpm]",
-    "Torque [Nm]",
-    "Tool wear [min]",
+    "type",
+    "air_temperature_k",
+    "process_temperature_k",
+    "rotational_speed_rpm",
+    "torque_nm",
+    "tool_wear_minutes",
     "power",
     "temp_diff",
     "mechanical_stress"
@@ -171,13 +183,22 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
     Q: For each derived feature you add, point to the EDA chart that
        justifies it. If you can't, should it be here?
+    A: addressed and justified in the EDA notebook
 
     Q: How does DictVectorizer handle a string column like "Type"?
        Do you need to encode it manually, or does the pipeline handle it?
+    A: DictVectorizer will automatically handle string columns by converting them into a one-hot encoded format.
+       This means that if you have a column like "Type" with categorical values, DictVectorizer will create 
+       new binary columns for each unique category in the "Type" column, 
+       allowing the model to process the categorical data without needing manual encoding beforehand.
     """
     df = df.copy()
+    df = df.rename(columns=COLUMN_RENAME)
 
     # TODO: engineer any derived features you identified from the EDA
+    df["power"] = df["torque_nm"] * df["rotational_speed_rpm"]
+    df["temp_diff"] = df["process_temperature_k"] - df["air_temperature_k"]
+    df["mechanical_stress"] = df["torque_nm"] * df["tool_wear_minutes"]
 
     target = "Machine failure"
     return df[FEATURES + [target]]
