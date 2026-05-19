@@ -98,6 +98,7 @@ class ExperimentConfig:
     target_type: str            # "binary" or "multiclass" — drives metric selection
     metric_average: str         # "binary" or "macro" — passed to f1_score, precision_score, etc.
     classifier_factory: Callable  # receives imbalance_ratio, returns a fitted-ready classifier
+    test_size: float = 0.2                   # optional, defaults to 20% test split
     description: str = ""                    # optional, defaults to empty string
     notes: Optional[str] = None              # optional, explicitly nullable
     tags: dict = field(default_factory=dict) # optional, mutable default
@@ -308,7 +309,7 @@ def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
     # and it could lead to confusion for someone who is not familiar with the codebase. 
     # A KeyError from a registry lookup would more clearly indicate that there is an issue 
     # with the configuration or the registry, making it easier to debug and fix the problem.
-    
+
     return config.classifier_factory(imbalance_ratio)
 
 
@@ -388,7 +389,7 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
 
     # TODO: split — consider test_size and whether to stratify
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, random_state=42  # add your arguments
+        X, y, random_state=42, test_size=config.test_size, stratify=y
     )
 
     # TODO: compute imbalance_ratio from y_train and pass it to _build_classifier
