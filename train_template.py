@@ -214,20 +214,64 @@ def train_model(df: pd.DataFrame):
        if it learns to always say "no failure"? What accuracy would it get?
        Is accuracy the right metric at all?
 
+    A: A model that learns to always say "no failure" would predict that there is no machine failure in all cases and as such have no utility.
+         It would get an accuracy of approximately 97% because it would be correct in 97% of the cases (the majority class), but it would fail 
+         to identify any of the actual failures (the minority class) which could be extrenmely costly in a real factory setting. Therefore, accuracy 
+         is not a reliable metric in this case.
+
+
     Q: XGBClassifier has scale_pos_weight. What value should it take?
        How would you compute it from the training labels, not hardcode it?
 
+       A: The scale_pos_weight parameter in XGBClassifier is used to handle class imbalance by assigning a weight to the positive class.
+            The value of scale_pos_weight can be computed as the ratio of the number of negative samples to the number of positive samples in the training labels. 
+            This can be calculated using the following formula:
+    
+            scale_pos_weight = (number of negative samples) / (number of positive samples)
+    
+            By computing this value from the training labels, you can ensure that the model is appropriately weighted to handle the class imbalance without hardcoding a specific value.
+       
+
+            
     Q: Should you stratify the train/test split? What breaks if you don't,
        given the class imbalance?
 
+       A: Yes, you should stratify the train/test split to ensure that the class distribution in both the training and testing sets is 
+       representative of the overall dataset. If you don't stratify, you might end up with a training set that has a very different 
+       class distribution than the testing set, which can lead to a model that performs well on the training data but poorly on the 
+       testing data.
+
+
     Q: A false negative means a machine fails without warning.
        A false positive means an unnecessary maintenance stop.
-       Which costs more in a real factory? How does your answer
+       
+       Which costs more in a real factory?
+        
+        A: In a real factory setting, a false negative (a machine failing without warning) typically costs more than a false positive (an unnecessary maintenance stop).
+           A false negative can lead to unplanned downtime, damage to equipment, and potential safety hazards, which can result in significant financial losses and operational disruptions. 
+           On the other hand, while a false positive may lead to unnecessary maintenance and associated costs, it is generally less severe than the consequences of a false negative. 
+           Therefore, in this context, minimizing false negatives is often more critical to ensure the safety and efficiency of factory operations. 
+          
+         How does your answer
        change which metric you optimise for?
+
+       A: Just like in MSE, where we penalise large errors more than small ones, here we want to penalise false negatives more than false positives.
+         Therefore, we might choose to optimize for a metric that takes into account the cost of false negatives, such as F1-score or a 
+         custom cost-sensitive metric, rather than just accuracy.
+
+         Another metrics such as recall (sensitivity) would also be important to optimize for, as it measures the ability of the model to 
+         correctly identify positive cases (failures), which is crucial in this context. In summary, we would choose a metric that reflects
+           the higher cost of false negatives in order to ensure that our model is more focused on correctly identifying machine failures.
+
 
     Q: Your pipeline needs at least a vectoriser and a classifier.
        DictVectorizer + XGBClassifier is one option.
        What would you use instead, and what would you gain or lose?
+
+A: Instead of using DictVectorizer + XGBClassifier, I could use a different combination such as CountVectorizer + RandomForestClassifier.
+    - CountVectorizer would be more suitable if we were dealing with text data, as it converts a collection of text documents to a matrix of token counts. 
+      However, since our dataset consists of numerical and categorical features, CountVectorizer may not be the best choice for this scenario.
+
     """
     target = "Machine failure"
     df_processed = preprocess(df)
@@ -251,8 +295,14 @@ def train_model(df: pd.DataFrame):
     y_pred_test = pipeline.predict(X_test_records)
     # TODO: if you need probability scores (e.g. for ROC-AUC), compute them here
 
-    # TODO: which metrics did you decide matter most for this use-case?
-    metrics: dict[str, float] = {}
+    # TODO: DEFINE METRICS — which metrics did you decide matter most for this use-case?
+
+    metrics: dict[str, float] = {
+    "f1_macro":  ...,  # f1_score(...)
+    "recall":    ...,  # recall_score(...)
+    "precision": ...,  # precision_score(...)
+}
+
 
     # TODO: which hyperparameters are worth tracking so you can reproduce this run?
     params: dict[str, object] = {}
@@ -265,21 +315,43 @@ def train_model(df: pd.DataFrame):
 # Q: The tracking URI, username, and password live in .env — not in code.
 #    Why? What would happen if you committed them to the repo instead?
 #
+#A: Storing the tracking URI, username, and password in a .env file instead of hardcoding them in the code is a best practice for several reasons:
+# 1. Security: Hardcoding sensitive information like usernames and passwords in the code can lead to security vulnerabilities, especially if the code is shared or stored in a public repository. If someone gains access to the code, they would also have access to the sensitive information.
+# 2. Flexibility: Using a .env file allows for easier configuration changes without modifying the code. This is particularly useful when deploying the application in different environments (development, staging, production) where the tracking URI and credentials may differ.
+# 3. Version Control: Committing sensitive information to a repository can lead to accidental exposure
+
 # Q: configure_mlflow() below receives a config object instead of hardcoding
 #    the experiment name. What does that buy you when you have multiple
 #    experiments? What would the alternative look like?
+
+# A: By receiving a config object instead of hardcoding the experiment name, configure_mlflow() 
+# becomes more flexible and reusable across multiple experiments. If you hardcode the experiment name,
+#  it would limit the function to only work for that specific experiment, and you would need to create 
+# separate functions or add conditional logic to handle different experiments. With a config object,
+#  you can easily switch between experiments by simply passing a different config, making the code 
+# cleaner and more maintainable. The alternative would involve hardcoding the experiment name
+#  within the function, which would require additional modifications to accommodate multiple experiments.
 #
 # Q: mlflow.set_experiment() creates the experiment if it does not exist.
 #    Is that the behaviour you want in a team setting, or should new
 #    experiments require an explicit approval step?
+#
+# A: In a large corporate setting or if you are resource constrained, it might be preferable to have new 
+# experiments require an explicit approval step rather than automatically creating them with 
+# mlflow.set_experiment(), but for our purposes and in a smaller team setting, the convenience of 
+# automatically creating experiments outweigh the need for an approval step.
+#
 
 def configure_mlflow(config: ExperimentConfig) -> None:
-    # TODO: read the tracking URI from the environment and set it on mlflow
-    #       Hint: os.getenv(...) + mlflow.set_tracking_uri(...)
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if not tracking_uri:
+        raise EnvironmentError("MLFLOW_TRACKING_URI is not set in the environment.")
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(config.experiment_name)
 
-    # TODO: activate the experiment defined in the config
-    #       Hint: mlflow.set_experiment(...)
-    pass
+
+
+
 
 
 # ── 6. MLflow logging ──────────────────────────────────────────────────────────
