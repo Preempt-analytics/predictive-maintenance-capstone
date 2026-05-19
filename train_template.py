@@ -487,9 +487,6 @@ def configure_mlflow(config: ExperimentConfig) -> None:
 
 
 
-
-
-
 # ── 6. MLflow logging ──────────────────────────────────────────────────────────
 #
 # Q: MLflow has three metadata slots: tags, params, metrics.
@@ -499,11 +496,37 @@ def configure_mlflow(config: ExperimentConfig) -> None:
 #      - metrics → numbers produced by training (scores, counts)
 #    Why does the distinction matter? What breaks if you log a metric as a param?
 #
+# A: The distinction between tags, params, and metrics in MLflow is important for organizing and interpreting the information
+#   associated with a run. Tags are free-form labels that provide context about the run, such as who ran it, what it was for, 
+#   and why it was done. Params are the inputs and configurations that were chosen before training, such as hyperparameters 
+#   and feature lists. Metrics are the numerical results produced by the training process, such as accuracy scores or loss values.
+#   If you log a metric as a param, it can lead to confusion and misinterpretation of the data. Metrics are meant to be tracked over time 
+#   and compared across runs, while params are static inputs that define the conditions of the run. 
+#   Logging a metric as a param would make it difficult to analyze the performance of different runs and could lead to incorrect 
+#   conclusions about which configurations are more effective.
+#
 # Q: What would a teammate need to see in the MLflow UI to understand this run
 #    three months from now, without reading the code?
 #
+# A: To understand this run three months from now without reading the code, a teammate would need to see:
+#    - The experiment name
+#    - The model family
+#    - The target type
+#    - The target variable
+#    - The developer who ran the experiment
+#    - The hyperparameters used for the model
+#    - The evaluation metrics achieved by the model
+#    - Any relevant tags that provide additional context about the run (e.g., "initial experiment", "tuned hyperparameters", etc.)
+#
 # Q: registered_model_name links a run to a versioned model in the registry.
 #    What does "registering" a model give you that a plain logged artifact does not?
+#
+# A: Registering a model in the MLflow registry provides several benefits compared to just logging it as an artifact:
+#    - Versioning: You can track different versions of the same model.
+#    - Lifecycle Management: You can manage the model through different stages (staging, production, etc.).
+#    - Deployment Integration: The registry integrates with deployment tools, making it easier to deploy models.
+#    - Collaboration: Team members can easily access and use registered models.
+
 #
 # Q: log_model() receives the config so it can read registered_model_name.
 #    If you hardcoded that name here instead, what would break when you add
@@ -513,29 +536,23 @@ def log_model(
     pipeline, metrics: dict, params: dict, config: ExperimentConfig
 ) -> None:
     with mlflow.start_run():
-        # CHANGED: tags were previously a mix of hardcoded strings and globals.
-        # Using config fields means every tag is determined by the experiment
-        # definition at the top of the file — no strings buried in functions.
-        # TODO: fill the dict using config.model_family, config.target_type,
-        #       config.target, config.experiment_name, and
-        #       os.getenv("MLFLOW_TRACKING_USERNAME", "unknown") for the developer
-        mlflow.set_tags({})
+        mlflow.set_tags({
+            "model_family": config.model_family,
+            "target_type": config.target_type,
+            "target": config.target,
+            "experiment_name": config.experiment_name,
+            "developer": os.getenv("MLFLOW_TRACKING_USERNAME", "unknown")
 
-        # CHANGED: previously one vague TODO covered all three logging calls.
-        # Splitting them makes it clear that params, metrics, and the model
-        # artifact are three distinct MLflow concepts logged with different calls.
-        # TODO: mlflow.log_params(params)
-        # TODO: mlflow.log_metrics(metrics)
+        })
 
-        # CHANGED: registered_model_name was previously hardcoded as a module-level
-        # constant (MODEL_NAME). Using config.registered_model_name means each
-        # experiment in EXPERIMENTS registers under its own name automatically —
-        # adding a new experiment requires no changes inside this function.
-        # TODO: mlflow.sklearn.log_model(
-        #           pipeline, name="model",
-        #           registered_model_name=config.registered_model_name
-        #       )
-        pass
+        mlflow.log_params(params)
+        mlflow.log_metrics(metrics)
+
+        mlflow.sklearn.log_model(
+            pipeline, artifact_path="model",
+            registered_model_name=config.registered_model_name
+        )
+
 
 
 # ── 7. CML report ──────────────────────────────────────────────────────────────
