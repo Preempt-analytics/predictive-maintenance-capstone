@@ -562,10 +562,25 @@ def write_cml_metrics(metrics: dict) -> None:
     Q: Which metrics from your dict does a reviewer need to see
        to decide whether this model is better than the previous one?
        Which ones are noise at the PR review stage?
+
+    A: A reviewer would likely need to see the test metrics (e.g., f1_test, precision_test, recall_test, 
+    and roc_auc_test if applicable) to evaluate the performance of the model on unseen data.
     """
-    lines = ["# Training Metrics", ""]
-    # TODO: add one f-string line per metric you want to surface
+
+    lines = [       
+        "# Training Metrics",
+        "",
+        f"f1_test:        {metrics['f1_test']:.4f}",
+        f"precision_test: {metrics['precision_test']:.4f}",
+        f"recall_test:    {metrics['recall_test']:.4f}",
+    ]
+
+    if "roc_auc_test" in metrics:
+        lines.append(f"roc_auc_test:   {metrics['roc_auc_test']:.4f}")
+
     Path("metrics.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -573,10 +588,27 @@ def write_cml_metrics(metrics: dict) -> None:
 # Q: The --experiment flag selects a config from EXPERIMENTS by key.
 #    What happens today if someone passes an unknown key?
 #    How would you give them a helpful error message?
+ 
+# A: If someone passes an unknown key to the --experiment flag, Click will automatically raise a BadParameter error 
+# with a message indicating that the value is not valid and listing the valid choices. This is because we have defined 
+# the type of the --experiment option as click.Choice(list(EXPERIMENTS)), which restricts the input to the keys of the 
+# EXPERIMENTS dictionary and provides built-in validation and error handling for invalid inputs.
 #
 # Q: What other CLI flags might be useful as your experiment suite grows?
 #    (Think: --n-estimators, --test-size, --dry-run…)
 #    At what point does a config file become a better choice than CLI flags?
+#
+#   A: As the experiment suite grows, additional CLI flags that could be useful include:
+#   - --n-estimators: to specify the number of trees in ensemble models like Random Forest or XGBoost.
+#   - --test-size: to allow users to specify the proportion of the dataset to be used as the test set.
+#   - --dry-run: to perform a trial run without actually training the model, which can be useful for testing the setup and configuration.
+#   - --tags: to allow users to add custom tags to the MLflow run for better organization and filtering in the UI.
+#   - --params: to allow users to specify additional hyperparameters for the model in a flexible way.
+
+#   When we have larger teams potentially including non-technical stakeholders who need to run experiments since a yaml
+#   or JSON config file can be more user-friendly and easier to manage than a long list of CLI flags, especially as the 
+#   number of configurable options increases.
+#   It is also safer to have the configuration in a seperate file to avoid unintentional edits to the production code.
 
 @click.command()
 @click.option(
