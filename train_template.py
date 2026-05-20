@@ -17,11 +17,9 @@ from pathlib import Path
 import click
 import mlflow
 from mlflow import config
-from mlflow.metrics import f1_score
-from opentelemetry import metrics
+from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 import pandas as pd
 from sklearn import pipeline
-from sklearn.metrics import recall_score, roc_auc_score
 import xgboost as xgb
 from dotenv import load_dotenv
 from sklearn.ensemble import RandomForestClassifier
@@ -41,11 +39,11 @@ df = pd.read_csv(DATA_PATH)
 
 COLUMN_RENAME = {
     "Type": "type",
-    "Air temperature [K]": "air_temperature_k",
-    "Process temperature [K]": "process_temperature_k",
+    "Air temperature [K]": "air_temperature_kelvin",
+    "Process temperature [K]": "process_temperature_kelvin",
     "Rotational speed [rpm]": "rotational_speed_rpm",
     "Torque [Nm]": "torque_nm",
-    "Tool wear [min]": "tool_wear_min",
+    "Tool wear [min]": "tool_wear_minutes",
     "Machine failure": "machine_failure",
     "TWF": "twf",
     "HDF": "hdf",
@@ -217,13 +215,13 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
 FEATURES = [
     "type",
-    "air_temperature_k",
-    "process_temperature_k",
+    "air_temperature_kelvin",
+    "process_temperature_kelvin",
     "rotational_speed_rpm",
     "torque_nm",
     "tool_wear_minutes",
-    "power",
-    "temp_diff",
+    "power_kw",
+    "temp_diff_kelvin",
     "mechanical_stress"
 ]
 
@@ -246,8 +244,8 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
     df = df.rename(columns=COLUMN_RENAME)
 
     # TODO: engineer any derived features you identified from the EDA
-    df["power"] = df["torque_nm"] * df["rotational_speed_rpm"]
-    df["temp_diff"] = df["process_temperature_k"] - df["air_temperature_k"]
+    df["power_kw"] = (df["torque_nm"] * df["rotational_speed_rpm"] * 2 * 3.14159 / 60) / 1000
+    df["temp_diff_kelvin"] = df["process_temperature_kelvin"] - df["air_temperature_kelvin"]
     df["mechanical_stress"] = df["torque_nm"] * df["tool_wear_minutes"]
 
     return df[FEATURES + [config.target]]
