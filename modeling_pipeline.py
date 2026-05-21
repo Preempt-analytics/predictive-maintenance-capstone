@@ -72,12 +72,33 @@ FEATURES = [
 
 @dataclass
 class ExperimentConfig:
-    """Single source of truth for one experiment.
+    """All settings needed to run, log, and reproduce one experiment.
 
-    classifier_factory receives the imbalance_ratio (float) and returns an
-    unfitted classifier. Multiclass factories ignore it (lambda _).
-    metric_average is passed directly to sklearn scoring functions — "binary"
-    for binary targets, "macro" for multiclass.
+    The classifier_factory pattern keeps train_model() free of if/else branching:
+    each config owns its classifier definition. All variation lives here, not
+    scattered across functions.
+
+    Args:
+        experiment_name:       MLflow experiment path shown in the UI.
+                               Convention: "project/model-family/target-type".
+                               Created automatically if it does not yet exist.
+        registered_model_name: Versioned entry in the MLflow model registry.
+                               Enables staging → production lifecycle management.
+        model_family:          Human-readable label logged as an MLflow tag
+                               (e.g. "xgboost", "random_forest", "logreg").
+        target:                DataFrame column to predict.
+                               "machine_failure" (binary) or "failure_type" (multiclass).
+        target_type:           "binary" or "multiclass".
+                               Controls label engineering, metric selection, and ROC-AUC.
+        metric_average:        Averaging strategy passed to sklearn scoring functions.
+                               "binary" for two-class targets, "macro" for multiclass.
+        classifier_factory:    Callable(imbalance_ratio: float) → unfitted classifier.
+                               Owns all hyperparameters for this experiment.
+                               Multiclass factories ignore imbalance_ratio (use lambda _).
+        test_size:             Fraction of data held out for evaluation. Default 0.2.
+        description:           Optional free-text summary for documentation.
+        notes:                 Optional scratchpad — not logged to MLflow.
+        tags:                  Extra key/value pairs merged into MLflow run tags.
     """
     experiment_name: str
     registered_model_name: str
@@ -199,13 +220,28 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 # ── Preprocessing ──────────────────────────────────────────────────────────────
 
 def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
-    """Return a DataFrame containing FEATURES + target column only.
+    """Rename columns, engineer features, and slice to model inputs + target.
 
-    Derived features are grounded in EDA findings:
-    - power_kw: torque × rpm converted to kW — failures cluster at power extremes
-    - temp_diff_kelvin: process − air temperature — HDF boundary correlates with low diff + low rpm
-    - mechanical_stress: torque × tool wear — captures compounded wear hazard
-    DictVectorizer in the downstream pipeline handles one-hot encoding of 'type'.
+    Domain features added here (each justified by EDA):
+    - power_kw:          torque × rpm → kW. Failures cluster at power extremes.
+    - temp_diff_kelvin:  process − air temperature. HDF risk rises when diff < 8.6 K.
+    - mechanical_stress: torque × tool wear. High torque on a worn tool is a compound hazard.
+
+    For multiclass experiments the five binary failure columns (twf, hdf, pwf, osf, rnf)
+    are collapsed into a single string label via resolve_label(); rows with no active
+    flag become "none". Where multiple flags are set simultaneously, the first match
+    wins (TWF > HDF > PWF > OSF > RNF) — an acceptable simplification for this dataset.
+
+    DictVectorizer in the downstream pipeline handles one-hot encoding of 'type'
+    automatically — no manual encoding needed here.
+
+    Args:
+        df:     Raw DataFrame loaded directly from ai4i2020.csv (original column names).
+        config: Active experiment config. Determines the target column and whether
+                the multiclass label column is built.
+
+    Returns:
+        DataFrame with columns FEATURES + [config.target]. All rows preserved.
     """
     df = df.copy().rename(columns=COLUMN_RENAME)
 
@@ -226,7 +262,20 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
 # ── Classifier builder ─────────────────────────────────────────────────────────
 
 def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
-    """Delegate classifier construction to the factory stored in config."""
+    """Instantiate the classifier defined in config.classifier_factory.
+
+    Keeping this as a thin wrapper means train_model() stays free of any
+    classifier-specific logic — all hyperparameter decisions live in EXPERIMENTS.
+
+    Args:
+        config:           Active experiment config.
+        imbalance_ratio:  Ratio of negative to positive training samples (~28 for
+                          this dataset). Passed to the factory lambda; multiclass
+                          factories ignore it (declared as lambda _).
+
+    Returns:
+        Unfitted sklearn-compatible classifier instance.
+    """
     return config.classifier_factory(imbalance_ratio)
 
 
@@ -235,8 +284,31 @@ def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
 def train_model(df: pd.DataFrame, config: ExperimentConfig):
     """Preprocess, split, train, and evaluate. Return (pipeline, metrics, params).
 
-    Stratified split preserves the minority-class ratio in both folds.
-    ROC-AUC is only meaningful for binary targets and is skipped for multiclass.
+    Stratified split preserves the ~97:3 minority-class ratio in both folds —
+    without stratify=y, the test set could end up with almost no failure cases,
+    making evaluation metrics unreliable.
+
+    ROC-AUC requires a single scalar probability score and is only computed for
+    binary targets. Multiclass ROC-AUC would need one-vs-rest decomposition and
+    is excluded here to keep cross-experiment comparison clean.
+
+    f1_train is logged alongside f1_test to surface overfitting at a glance:
+    a large train/test gap signals the model memorised training data.
+
+    Args:
+        df:     Raw DataFrame from ai4i2020.csv.
+        config: Active experiment config. Drives split size, target column,
+                classifier selection, and metric averaging strategy.
+
+    Returns:
+        pipeline (sklearn.Pipeline):
+            Fitted DictVectorizer + classifier. Ready for mlflow.sklearn.log_model().
+        metrics (dict[str, float]):
+            f1_train, f1_test, precision_test, recall_test — always present.
+            roc_auc_test — binary experiments only.
+        params (dict[str, object]):
+            Full classifier hyperparameters from get_params(), plus model_family,
+            target_type, and test_size. Sufficient to reproduce this exact run.
     """
     df_processed = preprocess(df, config)
     y = df_processed[config.target]
@@ -293,7 +365,19 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
 # ── MLflow ─────────────────────────────────────────────────────────────────────
 
 def configure_mlflow(config: ExperimentConfig) -> None:
-    """Point MLflow at the remote tracking server and select the experiment."""
+    """Point MLflow at the remote tracking server and activate the experiment.
+
+    Reads MLFLOW_TRACKING_URI from the environment (loaded from .env).
+    Credentials (username + password) are picked up automatically by MLflow
+    from MLFLOW_TRACKING_USERNAME and MLFLOW_TRACKING_PASSWORD in the environment.
+    Creates the experiment on the server if it does not yet exist.
+
+    Args:
+        config: Active experiment config supplying the experiment name.
+
+    Raises:
+        EnvironmentError: If MLFLOW_TRACKING_URI is not set in the environment.
+    """
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if not tracking_uri:
         raise EnvironmentError("MLFLOW_TRACKING_URI is not set in the environment.")
@@ -304,7 +388,23 @@ def configure_mlflow(config: ExperimentConfig) -> None:
 def log_model(
     pipeline, metrics: dict, params: dict, config: ExperimentConfig
 ) -> None:
-    """Log a single MLflow run and register the model artifact."""
+    """Open a new MLflow run and log tags, params, metrics, and the model artifact.
+
+    MLflow distinguishes three metadata types — keep them separate:
+      tags    → who/what/why (free-form labels, not compared across runs)
+      params  → inputs chosen before training (hyperparameters, split size)
+      metrics → outputs produced by training (scores, counts)
+
+    The model is both stored as a run artifact and registered under
+    config.registered_model_name, enabling versioned lifecycle management
+    (staging → production) in the MLflow registry.
+
+    Args:
+        pipeline: Fitted sklearn Pipeline produced by train_model().
+        metrics:  Evaluation scores from train_model() — logged as MLflow metrics.
+        params:   Hyperparameters from train_model() — logged as MLflow params.
+        config:   Active experiment config. Supplies tags and the registered model name.
+    """
     with mlflow.start_run():
         mlflow.set_tags({
             "model_family": config.model_family,
@@ -325,7 +425,18 @@ def log_model(
 # ── CML report ─────────────────────────────────────────────────────────────────
 
 def write_cml_metrics(metrics: dict) -> None:
-    """Write test metrics to metrics.txt for a CML pull-request report."""
+    """Write key test metrics to metrics.txt for a CML pull-request comment.
+
+    The CML GitHub Action picks up this file and attaches it as a comment on
+    the pull request, letting reviewers see model performance without opening
+    the MLflow UI. Includes test-set metrics only — f1_train is omitted since
+    reviewers need generalisation performance, not evidence of fitting.
+
+    Args:
+        metrics: Dict produced by train_model(). Keys f1_test, precision_test,
+                 and recall_test are always present. roc_auc_test is optional
+                 (binary experiments only) and included when available.
+    """
     lines = [
         "# Training Metrics",
         "",

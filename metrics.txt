@@ -1,5 +1,6 @@
 # Training Metrics
 
-f1_test:        0.2622
-precision_test: 0.2572
-recall_test:    0.7288
+f1_test:        0.8615
+precision_test: 0.9032
+recall_test:    0.8235
+roc_auc_test:   0.9764
