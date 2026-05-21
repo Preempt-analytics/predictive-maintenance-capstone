@@ -10,10 +10,20 @@ Supported experiments (pass via --experiment):
     lgbm_binary,  lgbm_multiclass
 
 Usage:
+    # Standard training run
     python modeling_pipeline.py --experiment xgb_binary
-    python modeling_pipeline.py --experiment rf_binary --cml-run
+    python modeling_pipeline.py --experiment lgbm_binary --cml-run
+
+    # Hyperparameter tuning with Optuna (lgbm experiments only)
+    python modeling_pipeline.py --experiment lgbm_binary --tune
+    python modeling_pipeline.py --experiment lgbm_binary --tune --n-trials 50
+    python modeling_pipeline.py --experiment lgbm_multiclass --tune --n-trials 30
+
+    # Tuning + CML report in one run
+    python modeling_pipeline.py --experiment lgbm_binary --tune --n-trials 30 --cml-run
 
 To add a new experiment: add one entry to EXPERIMENTS. No function code changes needed.
+To enable tuning for an experiment: add a param_space lambda to its ExperimentConfig.
 Credentials must live in .env — see .env.example.
 """
 
