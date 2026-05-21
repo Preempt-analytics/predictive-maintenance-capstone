@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 import click
 import mlflow
+import optuna
 import pandas as pd
 import xgboost as xgb
 import lightgbm as lgb
@@ -32,8 +33,11 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import make_pipeline
+
+# Silence Optuna's per-trial logging — summary is printed at the end instead.
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 load_dotenv()
 
@@ -106,6 +110,10 @@ class ExperimentConfig:
         description:           Optional free-text summary for documentation.
         notes:                 Optional scratchpad — not logged to MLflow.
         tags:                  Extra key/value pairs merged into MLflow run tags.
+        param_space:           Optional Callable(trial, imbalance_ratio) → dict of params.
+                               When provided, --tune mode uses this to define the search
+                               space Optuna samples from. If None, --tune is not supported
+                               for this experiment.
     """
     experiment_name: str
     registered_model_name: str
@@ -118,6 +126,9 @@ class ExperimentConfig:
     description: str = ""
     notes: Optional[str] = None
     tags: dict = field(default_factory=dict)
+    # param_space is optional — only experiments that support tuning define it.
+    # None means "this experiment has no search space; --tune will raise clearly."
+    param_space: Optional[Callable] = None
 
 
 EXPERIMENTS: dict[str, ExperimentConfig] = {
@@ -168,7 +179,23 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
             scale_pos_weight=r,
             random_state=42,
             n_jobs=-1,
-            max_depth=4
+            max_depth=4,
+        ),
+        # param_space defines what Optuna is allowed to search.
+        # trial.suggest_* methods tell Optuna the type and range of each parameter:
+        #   suggest_int   → integer (e.g. tree depth)
+        #   suggest_float → continuous value; log=True means search on log scale,
+        #                   useful for learning_rate which spans 0.001 → 0.3
+        # imbalance_ratio (r) is passed through directly — it's data-derived, not tunable.
+        param_space=lambda trial, r: dict(
+            n_estimators       = trial.suggest_int("n_estimators", 100, 500),
+            max_depth          = trial.suggest_int("max_depth", 2, 8),
+            learning_rate      = trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            min_child_samples  = trial.suggest_int("min_child_samples", 10, 100),
+            reg_lambda         = trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+            scale_pos_weight   = r,
+            random_state       = 42,
+            n_jobs             = -1,
         ),
     ),
 
@@ -182,9 +209,21 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         classifier_factory=lambda _: lgb.LGBMClassifier(
             n_estimators=200,
             objective="multiclass",
+            max_depth=3,
+            min_child_samples=30,
+            reg_lambda=2.0,
             random_state=42,
             n_jobs=-1,
-            max_depth=4
+        ),
+        param_space=lambda trial, _: dict(
+            n_estimators       = trial.suggest_int("n_estimators", 100, 500),
+            max_depth          = trial.suggest_int("max_depth", 2, 6),
+            learning_rate      = trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            min_child_samples  = trial.suggest_int("min_child_samples", 20, 150),
+            reg_lambda         = trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+            objective          = "multiclass",
+            random_state       = 42,
+            n_jobs             = -1,
         ),
     ),
     "rf_binary": ExperimentConfig(
@@ -387,6 +426,137 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
     return pipeline, metrics, params
 
 
+# ── Optuna hyperparameter tuning ───────────────────────────────────────────────
+# Optuna works by running many "trials". Each trial:
+#   1. Samples a set of hyperparameters from the param_space
+#   2. Trains the model using cross-validation (not a full train/test split)
+#   3. Returns a score — Optuna uses this to decide where to sample next
+#
+# Why cross-validation instead of a single train/test split?
+#   A single split is noisy — the score depends on which rows ended up in test.
+#   CV splits the training data into k folds, trains k times, and averages the
+#   scores. This gives a more reliable signal per trial.
+#
+# Why not just grid search?
+#   Grid search tries every combination — 5 values × 5 values × 5 values = 125 fits.
+#   Optuna uses Bayesian optimisation (TPE sampler): after each trial it builds a
+#   model of which regions of the search space produce good scores, and focuses
+#   subsequent trials there. 30 Optuna trials typically beats 125 grid search fits.
+
+def tune_model(
+    df: pd.DataFrame,
+    config: ExperimentConfig,
+    n_trials: int = 30,
+) -> dict:
+    """Run Optuna hyperparameter search and return the best params found.
+
+    Uses StratifiedKFold cross-validation as the objective so that the minority
+    class is represented in every fold — important given the ~97:3 imbalance.
+    The test set is never touched during tuning; it is only used in the final
+    train_model() call after the best params are applied to classifier_factory.
+
+    Args:
+        df:       Raw DataFrame from ai4i2020.csv.
+        config:   Active experiment config. Must have param_space defined.
+        n_trials: Number of Optuna trials to run. More trials = better search
+                  but longer runtime. 30 is a reasonable default for a laptop.
+
+    Returns:
+        Dict of best hyperparameters found. Caller applies these by updating
+        config.classifier_factory before passing to train_model().
+
+    Raises:
+        ValueError: If config.param_space is None (experiment has no search space).
+    """
+    if config.param_space is None:
+        raise ValueError(
+            f"Experiment '{config.experiment_name}' has no param_space defined. "
+            "Add a param_space lambda to its ExperimentConfig to enable tuning."
+        )
+
+    # Preprocess once — no point repeating feature engineering on every trial.
+    df_processed = preprocess(df, config)
+    y = df_processed[config.target]
+    X = df_processed.drop(columns=[config.target])
+
+    # Hold out the test set now and never touch it during tuning.
+    # Tuning happens entirely within X_train — this prevents the test set from
+    # influencing hyperparameter selection (which would be a form of data leakage).
+    X_train, _, y_train, _ = train_test_split(
+        X, y, random_state=42, test_size=config.test_size, stratify=y
+    )
+
+    # Compute imbalance ratio from training labels only (same as train_model).
+    if config.target_type == "binary":
+        imbalance_ratio = (y_train == 0).sum() / (y_train == 1).sum()
+    else:
+        imbalance_ratio = 1.0
+
+    # StratifiedKFold ensures each fold has the same class ratio as the full set.
+    # 5 folds = each trial trains 5 models and averages their scores.
+    # We use a manual loop (not cross_val_score) so we can pass eval_set to each
+    # fold's fit() call — required for LightGBM early stopping.
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    # DictVectorizer is fit once on the full training set and reused across folds.
+    # This is correct because the vectoriser only learns the feature schema (column
+    # names and categories) — not any target-related statistics — so fitting it
+    # outside the CV loop does not leak information.
+    dv = DictVectorizer(sparse=False)
+    X_train_records = X_train.to_dict(orient="records")
+    X_train_vec = dv.fit_transform(X_train_records)
+
+    def objective(trial: optuna.Trial) -> float:
+        # Sample a candidate set of hyperparameters for this trial.
+        # Optuna learns from previous trials which regions look promising.
+        params = config.param_space(trial, imbalance_ratio)
+
+        # early_stopping_rounds: if the validation score does not improve for
+        # this many consecutive trees, LightGBM stops adding more trees early.
+        # This directly prevents the model from memorising training data
+        # (the f1_train=1.0 problem) within each trial.
+        # n_estimators in params becomes the *maximum* number of trees —
+        # early stopping may use far fewer.
+        early_stopping_rounds = trial.suggest_int("early_stopping_rounds", 20, 50)
+
+        fold_scores = []
+
+        for train_idx, val_idx in cv.split(X_train_vec, y_train):
+            X_fold_train = X_train_vec[train_idx]
+            X_fold_val   = X_train_vec[val_idx]
+            y_fold_train = y_train.iloc[train_idx]
+            y_fold_val   = y_train.iloc[val_idx]
+
+            classifier = lgb.LGBMClassifier(**params, verbose=-1)
+
+            # eval_set gives LightGBM a validation fold to monitor during training.
+            # Each new tree is evaluated on this fold — if it doesn't improve the
+            # score for early_stopping_rounds consecutive rounds, training stops.
+            classifier.fit(
+                X_fold_train, y_fold_train,
+                eval_set=[(X_fold_val, y_fold_val)],
+                callbacks=[lgb.early_stopping(early_stopping_rounds, verbose=False)],
+            )
+
+            y_pred = classifier.predict(X_fold_val)
+            fold_scores.append(
+                f1_score(y_fold_val, y_pred, average=config.metric_average)
+            )
+
+        # Mean across all 5 folds — more stable than a single split score.
+        return sum(fold_scores) / len(fold_scores)
+
+    # Create the study. "maximize" because higher F1 = better.
+    # TPESampler is Optuna's default Bayesian sampler — not random search.
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+    print(f"\nBest CV f1_{config.metric_average}: {study.best_value:.4f}")
+    print(f"Best params: {study.best_params}")
+
+    return study.best_params
+
+
 # ── MLflow ─────────────────────────────────────────────────────────────────────
 # Two-step process: configure the experiment server-side, then log the run.
 # MLflow distinguishes three metadata types — keep them separate:
@@ -490,14 +660,59 @@ def write_cml_metrics(metrics: dict) -> None:
     default=False,
     help="Write metrics.txt for a CML pull request report.",
 )
-def main(experiment: str, cml_run: bool) -> None:
-    """Train a predictive maintenance failure classifier."""
-    config = EXPERIMENTS[experiment]
+@click.option(
+    "--tune/--no-tune",
+    default=False,
+    help="Run Optuna hyperparameter search before training.",
+)
+@click.option(
+    "--n-trials",
+    default=30,
+    show_default=True,
+    help="Number of Optuna trials to run (only used with --tune).",
+)
+def main(experiment: str, cml_run: bool, tune: bool, n_trials: int) -> None:
+    """Train a predictive maintenance failure classifier.
 
+    With --tune: runs Optuna hyperparameter search first, then trains the final
+    model with the best params found and logs it to MLflow as a normal run.
+    Without --tune: trains once with the fixed params in EXPERIMENTS.
+    """
+    config = EXPERIMENTS[experiment]
     df = pd.read_csv(DATA_PATH)
     configure_mlflow(config)
 
+    if tune:
+        # ── Tuning path ───────────────────────────────────────────────────────
+        # tune_model() searches for the best hyperparameters using CV on the
+        # training set only. It returns a dict of the winning params.
+        print(f"Running Optuna search ({n_trials} trials) for {experiment}...")
+        best_params = tune_model(df, config, n_trials=n_trials)
+
+        # Patch classifier_factory to use the best params Optuna found.
+        # This means train_model() below will build its classifier from these
+        # params rather than the fixed defaults in EXPERIMENTS.
+        if config.model_family == "lightgbm":
+            config.classifier_factory = lambda r: lgb.LGBMClassifier(
+                **{**best_params, "scale_pos_weight": r if config.target_type == "binary" else 1.0}
+            )
+        elif config.model_family == "xgboost":
+            config.classifier_factory = lambda r: xgb.XGBClassifier(
+                **{**best_params, "scale_pos_weight": r if config.target_type == "binary" else 1.0}
+            )
+        # Note: RF and logreg don't have param_space defined so --tune will
+        # raise a clear ValueError before reaching here.
+
+    # ── Standard training path (always runs) ─────────────────────────────────
+    # Whether or not we tuned, train_model() does the final fit on the full
+    # train set and evaluates on the held-out test set.
     pipeline, metrics, params = train_model(df, config)
+
+    if tune:
+        # Tag the MLflow run so it's clearly identifiable as a tuned run.
+        params["optuna_n_trials"] = n_trials
+        params["tuned"] = True
+
     log_model(pipeline, metrics, params, config)
 
     if cml_run:
