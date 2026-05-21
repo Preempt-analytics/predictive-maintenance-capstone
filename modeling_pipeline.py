@@ -11,11 +11,10 @@ Supported experiments (pass via --experiment):
 
 Usage:
     python modeling_pipeline.py --experiment xgb_binary
-    python modeling_pipeline.py --experiment xgb_binary --cml-run
-    python modeling_pipeline.py --experiment rf_binary
-    ...
-    Additional experiments can be added to the EXPERIMENTS registry with a new config
-    and run via the script .
+    python modeling_pipeline.py --experiment rf_binary --cml-run
+
+To add a new experiment: add one entry to EXPERIMENTS. No function code changes needed.
+Credentials must live in .env — see .env.example.
 """
 
 import os
@@ -38,8 +37,12 @@ from sklearn.pipeline import make_pipeline
 
 load_dotenv()
 
+
+
+
 DATA_PATH = Path("data/ai4i2020.csv")
 
+# Maps original CSV column names to clean snake_case equivalents used throughout.
 COLUMN_RENAME = {
     "Type": "type",
     "Air temperature [K]": "air_temperature_kelvin",
@@ -55,6 +58,8 @@ COLUMN_RENAME = {
     "RNF": "rnf",
 }
 
+# Five raw sensor readings + three domain-derived features (engineered in preprocess).
+# "type" (L/M/H machine variant) is a string; DictVectorizer one-hot encodes it automatically.
 FEATURES = [
     "type",
     "air_temperature_kelvin",
@@ -62,20 +67,22 @@ FEATURES = [
     "rotational_speed_rpm",
     "torque_nm",
     "tool_wear_minutes",
-    "power_kw",
-    "temp_diff_kelvin",
-    "mechanical_stress",
+    "power_kw",           # torque × rpm → watts, converted to kW
+    "temp_diff_kelvin",   # process − air temperature
+    "mechanical_stress",  # torque × tool wear (combined wear hazard)
 ]
 
 
 # ── Experiment registry ────────────────────────────────────────────────────────
+# Central config layer: all experiment-specific decisions live here.
+# Adding a new experiment = one new dict entry; no function code changes needed.
 
 @dataclass
 class ExperimentConfig:
     """All settings needed to run, log, and reproduce one experiment.
 
     The classifier_factory pattern keeps train_model() free of if/else branching:
-    each config owns its classifier definition. All variation lives here, not
+    each config owns its classifier definition. All variation is here, not
     scattered across functions.
 
     Args:
@@ -89,7 +96,7 @@ class ExperimentConfig:
         target:                DataFrame column to predict.
                                "machine_failure" (binary) or "failure_type" (multiclass).
         target_type:           "binary" or "multiclass".
-                               Controls label engineering, metric selection, and ROC-AUC.
+                               Controls label handling, metric selection, and ROC-AUC.
         metric_average:        Averaging strategy passed to sklearn scoring functions.
                                "binary" for two-class targets, "macro" for multiclass.
         classifier_factory:    Callable(imbalance_ratio: float) → unfitted classifier.
@@ -105,7 +112,7 @@ class ExperimentConfig:
     model_family: str
     target: str
     target_type: str       # "binary" or "multiclass"
-    metric_average: str    # "binary" or "macro"
+    metric_average: str    # "binary" or "macro" — passed directly to sklearn metrics
     classifier_factory: Callable
     test_size: float = 0.2
     description: str = ""
@@ -121,10 +128,14 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         target="machine_failure",
         target_type="binary",
         metric_average="binary",
-        # scale_pos_weight compensates for ~97:3 class imbalance without resampling
+        # `r` = imbalance_ratio (~28). scale_pos_weight tells XGBoost to penalise
+        # missed failures 28× more heavily — no resampling needed.
         classifier_factory=lambda r: xgb.XGBClassifier(
-            n_estimators=200, scale_pos_weight=r,
-            random_state=42, n_jobs=-1, eval_metric="logloss",
+            n_estimators=200,
+            scale_pos_weight=r,    # passed in from train_model; compensates ~97:3 split
+            random_state=42,
+            n_jobs=-1,             # use all CPU cores
+            eval_metric="logloss",
         ),
     ),
 
@@ -135,9 +146,13 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         target="failure_type",
         target_type="multiclass",
         metric_average="macro",
+        # `_` signals the factory intentionally ignores imbalance_ratio.
         classifier_factory=lambda _: xgb.XGBClassifier(
-            n_estimators=200, objective="multi:softprob",
-            random_state=42, n_jobs=-1, eval_metric="mlogloss",
+            n_estimators=200,
+            objective="multi:softprob",  # outputs a probability per class
+            random_state=42,
+            n_jobs=-1,
+            eval_metric="mlogloss",
         ),
     ),
 
@@ -153,6 +168,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
             scale_pos_weight=r,
             random_state=42,
             n_jobs=-1,
+            max_depth=4
         ),
     ),
 
@@ -168,6 +184,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
             objective="multiclass",
             random_state=42,
             n_jobs=-1,
+            max_depth=4
         ),
     ),
     "rf_binary": ExperimentConfig(
@@ -177,8 +194,12 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         target="machine_failure",
         target_type="binary",
         metric_average="binary",
+        # class_weight="balanced" is RF's equivalent of XGBoost's scale_pos_weight.
         classifier_factory=lambda _: RandomForestClassifier(
-            class_weight="balanced", n_estimators=100, random_state=42, n_jobs=-1,
+            class_weight="balanced",
+            n_estimators=100,
+            random_state=42,
+            n_jobs=-1,
         ),
     ),
     "rf_multiclass": ExperimentConfig(
@@ -189,7 +210,10 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         target_type="multiclass",
         metric_average="macro",
         classifier_factory=lambda _: RandomForestClassifier(
-            class_weight="balanced", n_estimators=100, random_state=42, n_jobs=-1,
+            class_weight="balanced",
+            n_estimators=100,
+            random_state=42,
+            n_jobs=-1,
         ),
     ),
     "logreg_binary": ExperimentConfig(
@@ -200,7 +224,9 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         target_type="binary",
         metric_average="binary",
         classifier_factory=lambda _: LogisticRegression(
-            class_weight="balanced", max_iter=1000, random_state=42,
+            class_weight="balanced",
+            max_iter=1000,   # default 100 rarely converges on this dataset
+            random_state=42,
         ),
     ),
     "logreg_multiclass": ExperimentConfig(
@@ -210,14 +236,20 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         target="failure_type",
         target_type="multiclass",
         metric_average="macro",
+        # sklearn's LogisticRegression handles multiclass natively (one-vs-rest by default).
         classifier_factory=lambda _: LogisticRegression(
-            class_weight="balanced", max_iter=1000, random_state=42,
+            class_weight="balanced",
+            max_iter=1000,
+            random_state=42,
         ),
     ),
 }
 
 
 # ── Preprocessing ──────────────────────────────────────────────────────────────
+# Renames columns, engineers three domain features from EDA, and (for multiclass)
+# collapses the five binary failure flags into one string label.
+# Output contains only FEATURES + target — nothing else reaches the model.
 
 def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
     """Rename columns, engineer features, and slice to model inputs + target.
@@ -228,12 +260,7 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
     - mechanical_stress: torque × tool wear. High torque on a worn tool is a compound hazard.
 
     For multiclass experiments the five binary failure columns (twf, hdf, pwf, osf, rnf)
-    are collapsed into a single string label via resolve_label(); rows with no active
-    flag become "none". Where multiple flags are set simultaneously, the first match
-    wins (TWF > HDF > PWF > OSF > RNF) — an acceptable simplification for this dataset.
-
-    DictVectorizer in the downstream pipeline handles one-hot encoding of 'type'
-    automatically — no manual encoding needed here.
+    are collapsed into a single string label; rows with no active flag become "none".
 
     Args:
         df:     Raw DataFrame loaded directly from ai4i2020.csv (original column names).
@@ -241,7 +268,8 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
                 the multiclass label column is built.
 
     Returns:
-        DataFrame with columns FEATURES + [config.target]. All rows preserved.
+        DataFrame with columns FEATURES + [config.target]. Shape: (n_rows, 10).
+        All rows from the input are preserved — no filtering is applied here.
     """
     df = df.copy().rename(columns=COLUMN_RENAME)
 
@@ -260,18 +288,17 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
 
 
 # ── Classifier builder ─────────────────────────────────────────────────────────
+# Thin wrapper that keeps train_model() free of any classifier-specific logic.
+# All hyperparameter decisions live in the EXPERIMENTS registry.
 
 def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
     """Instantiate the classifier defined in config.classifier_factory.
 
-    Keeping this as a thin wrapper means train_model() stays free of any
-    classifier-specific logic — all hyperparameter decisions live in EXPERIMENTS.
-
     Args:
         config:           Active experiment config.
-        imbalance_ratio:  Ratio of negative to positive training samples (~28 for
-                          this dataset). Passed to the factory lambda; multiclass
-                          factories ignore it (declared as lambda _).
+        imbalance_ratio:  Ratio of negative to positive training samples (~28 for this
+                          dataset). Passed to the factory lambda; multiclass factories
+                          ignore it (declared as lambda _).
 
     Returns:
         Unfitted sklearn-compatible classifier instance.
@@ -280,20 +307,17 @@ def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
 
 
 # ── Training ───────────────────────────────────────────────────────────────────
+# Orchestrates the full run: split → build pipeline → fit → score.
+# The pipeline chains DictVectorizer (handles mixed types, one-hot encodes strings)
+# into the classifier. Inputs are passed as record dicts, not numeric arrays.
 
 def train_model(df: pd.DataFrame, config: ExperimentConfig):
-    """Preprocess, split, train, and evaluate. Return (pipeline, metrics, params).
+    """Preprocess, split, train, and evaluate. Return pipeline, metrics, and params.
 
-    Stratified split preserves the ~97:3 minority-class ratio in both folds —
-    without stratify=y, the test set could end up with almost no failure cases,
-    making evaluation metrics unreliable.
-
-    ROC-AUC requires a single scalar probability score and is only computed for
-    binary targets. Multiclass ROC-AUC would need one-vs-rest decomposition and
-    is excluded here to keep cross-experiment comparison clean.
-
-    f1_train is logged alongside f1_test to surface overfitting at a glance:
-    a large train/test gap signals the model memorised training data.
+    Stratified split preserves the minority-class ratio in both folds — essential
+    with a ~97:3 split to avoid an empty positive class in the test set.
+    ROC-AUC is computed for binary targets only (requires scalar probability scores).
+    f1_train is logged alongside f1_test to surface overfitting at a glance.
 
     Args:
         df:     Raw DataFrame from ai4i2020.csv.
@@ -308,7 +332,7 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
             roc_auc_test — binary experiments only.
         params (dict[str, object]):
             Full classifier hyperparameters from get_params(), plus model_family,
-            target_type, and test_size. Sufficient to reproduce this exact run.
+            target_type, and test_size. Logged to MLflow to reproduce this run.
     """
     df_processed = preprocess(df, config)
     y = df_processed[config.target]
@@ -318,8 +342,8 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
         X, y, random_state=42, test_size=config.test_size, stratify=y
     )
 
-    # Guard against ZeroDivisionError: multiclass y_train holds string labels,
-    # so integer comparisons would produce 0/0.
+    # Guard: multiclass y_train contains string labels ("twf", "none", …).
+    # Integer comparisons (== 0, == 1) return all-False → 0 / 0 → ZeroDivisionError.
     if config.target_type == "binary":
         imbalance_ratio = (y_train == 0).sum() / (y_train == 1).sum()
     else:
@@ -327,6 +351,7 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
 
     classifier = _build_classifier(config, imbalance_ratio)
 
+    # DictVectorizer expects a list of row dicts — convert here once.
     X_train_records = X_train.to_dict(orient="records")
     X_test_records = X_test.to_dict(orient="records")
 
@@ -337,12 +362,12 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
     y_pred_test = pipeline.predict(X_test_records)
 
     y_prob_test = (
-        pipeline.predict_proba(X_test_records)[:, 1]
+        pipeline.predict_proba(X_test_records)[:, 1]  # positive-class probability score
         if config.target_type == "binary"
         else None
     )
 
-    average = config.metric_average
+    average = config.metric_average  # "binary" or "macro" — stored per experiment
     metrics: dict[str, float] = {
         "f1_train":       f1_score(y_train, y_pred_train, average=average),
         "f1_test":        f1_score(y_test, y_pred_test, average=average),
@@ -353,23 +378,26 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
         metrics["roc_auc_test"] = roc_auc_score(y_test, y_prob_test)
 
     params: dict[str, object] = {
-        **classifier.get_params(),
+        **classifier.get_params(),        # full hyperparameter set from the classifier
         "model_family": config.model_family,
-        "target_type": config.target_type,
-        "test_size": config.test_size,
+        "target_type":  config.target_type,
+        "test_size":    config.test_size,
     }
 
     return pipeline, metrics, params
 
 
 # ── MLflow ─────────────────────────────────────────────────────────────────────
+# Two-step process: configure the experiment server-side, then log the run.
+# MLflow distinguishes three metadata types — keep them separate:
+#   tags   → who/what/why (free-form labels, not compared across runs)
+#   params → inputs chosen before training (hyperparameters, split size)
+#   metrics → outputs produced by training (scores, counts)
 
 def configure_mlflow(config: ExperimentConfig) -> None:
     """Point MLflow at the remote tracking server and activate the experiment.
 
     Reads MLFLOW_TRACKING_URI from the environment (loaded from .env).
-    Credentials (username + password) are picked up automatically by MLflow
-    from MLFLOW_TRACKING_USERNAME and MLFLOW_TRACKING_PASSWORD in the environment.
     Creates the experiment on the server if it does not yet exist.
 
     Args:
@@ -390,28 +418,23 @@ def log_model(
 ) -> None:
     """Open a new MLflow run and log tags, params, metrics, and the model artifact.
 
-    MLflow distinguishes three metadata types — keep them separate:
-      tags    → who/what/why (free-form labels, not compared across runs)
-      params  → inputs chosen before training (hyperparameters, split size)
-      metrics → outputs produced by training (scores, counts)
-
     The model is both stored as a run artifact and registered under
     config.registered_model_name, enabling versioned lifecycle management
     (staging → production) in the MLflow registry.
 
     Args:
         pipeline: Fitted sklearn Pipeline produced by train_model().
-        metrics:  Evaluation scores from train_model() — logged as MLflow metrics.
-        params:   Hyperparameters from train_model() — logged as MLflow params.
+        metrics:  Evaluation scores produced by train_model() — logged as metrics.
+        params:   Hyperparameters produced by train_model() — logged as params.
         config:   Active experiment config. Supplies tags and the registered model name.
     """
     with mlflow.start_run():
         mlflow.set_tags({
-            "model_family": config.model_family,
-            "target_type": config.target_type,
-            "target": config.target,
+            "model_family":    config.model_family,
+            "target_type":     config.target_type,
+            "target":          config.target,
             "experiment_name": config.experiment_name,
-            "developer": os.getenv("MLFLOW_TRACKING_USERNAME", "unknown"),
+            "developer":       os.getenv("MLFLOW_TRACKING_USERNAME", "unknown"),
         })
         mlflow.log_params(params)
         mlflow.log_metrics(metrics)
@@ -423,19 +446,20 @@ def log_model(
 
 
 # ── CML report ─────────────────────────────────────────────────────────────────
+# Writes a lightweight markdown file consumed by the CML GitHub Action.
+# The Action attaches it as a comment on the pull request for quick review.
 
 def write_cml_metrics(metrics: dict) -> None:
     """Write key test metrics to metrics.txt for a CML pull-request comment.
 
-    The CML GitHub Action picks up this file and attaches it as a comment on
-    the pull request, letting reviewers see model performance without opening
-    the MLflow UI. Includes test-set metrics only — f1_train is omitted since
-    reviewers need generalisation performance, not evidence of fitting.
+    Includes f1, precision, recall on the test set, and roc_auc (binary only).
+    f1_train is intentionally omitted — reviewers need test performance,
+    not evidence of fitting.
 
     Args:
         metrics: Dict produced by train_model(). Keys f1_test, precision_test,
                  and recall_test are always present. roc_auc_test is optional
-                 (binary experiments only) and included when available.
+                 (binary experiments only).
     """
     lines = [
         "# Training Metrics",
@@ -450,6 +474,8 @@ def write_cml_metrics(metrics: dict) -> None:
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
+# Click validates --experiment against EXPERIMENTS keys automatically and prints
+# the full list of valid choices on error — no extra validation needed.
 
 @click.command()
 @click.option(
