@@ -700,15 +700,21 @@ def main(experiment: str, cml_run: bool, tune: bool, n_trials: int) -> None:
         best_params = tune_model(df, config, n_trials=n_trials)
 
         # Patch classifier_factory to use the best params Optuna found.
-        # This means train_model() below will build its classifier from these
-        # params rather than the fixed defaults in EXPERIMENTS.
+        # early_stopping_rounds is stripped out here — it was used during CV
+        # (where each fold had an eval_set) but the final train_model() call
+        # uses pipeline.fit() without eval_set, so passing it would crash.
+        classifier_params = {
+            k: v for k, v in best_params.items()
+            if k != "early_stopping_rounds"
+        }
+
         if config.model_family == "lightgbm":
             config.classifier_factory = lambda r: lgb.LGBMClassifier(
-                **{**best_params, "scale_pos_weight": r if config.target_type == "binary" else 1.0}
+                **{**classifier_params, "scale_pos_weight": r if config.target_type == "binary" else 1.0}
             )
         elif config.model_family == "xgboost":
             config.classifier_factory = lambda r: xgb.XGBClassifier(
-                **{**best_params, "scale_pos_weight": r if config.target_type == "binary" else 1.0}
+                **{**classifier_params, "scale_pos_weight": r if config.target_type == "binary" else 1.0}
             )
         # Note: RF and logreg don't have param_space defined so --tune will
         # raise a clear ValueError before reaching here.
