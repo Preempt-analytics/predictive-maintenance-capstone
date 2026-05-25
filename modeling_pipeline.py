@@ -611,6 +611,10 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
         pipeline = make_pipeline(DictVectorizer(sparse=False), StandardScaler(), classifier)
     else:
         pipeline = make_pipeline(DictVectorizer(), classifier)
+    # set_output("pandas") tells every transformer in the pipeline to output a
+    # named DataFrame instead of a numpy array. LightGBM then receives column
+    # names and stops warning "X does not have valid feature names".
+    pipeline.set_output(transform="pandas")
     pipeline.fit(X_train_records, y_train)
 
     y_pred_train = pipeline.predict(X_train_records)
