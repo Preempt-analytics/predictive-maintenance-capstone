@@ -38,98 +38,99 @@ stages:
   # The --experiment value must match a key in the EXPERIMENTS dict in modeling_pipeline.py.
 
   train_xgb_multiclass:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment xgb_multiclass
     deps:
-      - _______
-      - _______
-      - _______
-
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
+      
   # ── Tree-based: LightGBM ──────────────────────────────────────────────────────
   # Same pattern as XGBoost. Two stages: binary and multiclass.
   # What changes between them? Only the --experiment argument.
 
   train_lgbm_binary:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment lgbm_binary
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   train_lgbm_multiclass:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment lgbm_multiclass
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   # ── Tree-based: Random Forest ─────────────────────────────────────────────────
   # Why does Random Forest belong in the same pipeline structure as XGBoost/LightGBM?
   # What do all three have in common that justifies identical deps?
 
   train_rf_binary:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment rf_binary
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   train_rf_multiclass:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment rf_multiclass
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   # ── Probabilistic: Logistic Regression ───────────────────────────────────────
   # logreg uses needs_scaling=False in modeling_pipeline.py.
   # Does that change anything in dvc.yaml? Why or why not?
 
   train_logreg_binary:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment logreg_binary
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   train_logreg_multiclass:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment logreg_multiclass
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   # ── Distance-based: SVM ───────────────────────────────────────────────────────
   # SVM uses needs_scaling=True — StandardScaler is inserted by modeling_pipeline.py.
   # Should feature_transformation.py still be listed as a dep? Why?
 
   train_svm_binary:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment svm_binary
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   train_svm_multiclass:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment svm_multiclass
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
+  
 
   # ── Neural Network: MLP ───────────────────────────────────────────────────────
   # MLP also uses needs_scaling=True and has early_stopping built in.
   # The deps are identical to every other stage — why is that consistent and correct?
 
   train_mlp_binary:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment mlp_binary
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
 
   train_mlp_multiclass:
-    cmd: _______
+    cmd: python modeling_pipeline.py --experiment mlp_multiclass
     deps:
-      - _______
-      - _______
-      - _______
+      - modeling_pipeline.py
+      - feature_transformation.py
+      - data/ai4i2020.csv
