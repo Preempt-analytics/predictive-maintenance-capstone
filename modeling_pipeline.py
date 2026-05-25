@@ -500,10 +500,26 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
 
 # ── Preprocessing ──────────────────────────────────────────────────────────────
-# Renames columns, engineers three domain features from EDA, and (for multiclass)
-# collapses the five binary failure flags into one string label.
-# Output contains only FEATURES + target — nothing else reaches the model.
+
 def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
+    """Apply feature engineering and target construction to the raw DataFrame.
+
+    Delegates column renaming and domain feature derivation to engineer_features(),
+    which is shared with the simulator to guarantee identical transforms at inference.
+    For multiclass targets, collapses the five binary failure flags into a single
+    string label. Output is restricted to FEATURES + target — nothing else reaches
+    the model.
+
+    Args:
+        df:     Raw DataFrame from ai4i2020.csv.
+        config: Active experiment config. target_type controls whether failure_type
+                is constructed from the binary flag columns (multiclass only).
+
+    Returns:
+        DataFrame containing only FEATURES + config.target, ready for
+        train_test_split and DictVectorizer.
+    """
+    
     # engineer_features() handles column renaming + all three derived features.
     # Defined in feature_transformation.py so the simulator uses the exact same transforms.
     df = engineer_features(df)
