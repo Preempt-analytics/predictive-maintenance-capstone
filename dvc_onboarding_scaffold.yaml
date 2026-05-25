@@ -1,0 +1,286 @@
+# DVC Onboarding — Scaffolded Learning Guide
+# ============================================
+# Work through each section top to bottom.
+# Each item has:
+#   prompt:  the concept or command to complete — fill in the blanks (___)
+#   hint:    uncomment (remove the leading #) to reveal guidance
+#   answer:  uncomment only after you've made your own attempt
+#
+# Goal: by the end you should be able to set up DVC on a new machine
+# from memory, without referring back to this file.
+
+
+# ── Section 1: Core concepts ──────────────────────────────────────────────────
+
+concepts:
+
+  - id: what_git_tracks
+    prompt: "Git tracks _______. DVC tracks _______."
+    # hint: think about source code vs. large binary files
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "Git tracks code. DVC tracks data (and models)."
+
+  - id: pointer_file
+    prompt: >
+      Instead of committing the raw CSV, git commits a _______ file.
+      The pointer file for our dataset is named _______.
+    # hint: DVC uses a file extension that matches its own name
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: ".dvc pointer file. Named data/ai4i2020.csv.dvc"
+
+  - id: why_dvc
+    prompt: >
+      Large files in git slow down every _______. DVC keeps the repo fast
+      while guaranteeing everyone trains on _______ data.
+    # hint: think about the first command a new teammate runs
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "every clone/push. identical data."
+
+  - id: remote_vs_local
+    prompt: >
+      Our dataset is stored on _______, not in GitHub.
+      The DVC remote URL ends in _______, not .git.
+    # hint: the platform is the same one we use for MLflow tracking
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "DagsHub. Ends in .dvc"
+
+
+# ── Section 2: Setup commands ─────────────────────────────────────────────────
+
+setup_steps:
+
+  - step: 1
+    title: Clone the repo
+    prompt: "git _______ https://github.com/Preempt-analytics/predictive-maintenance-capstone.git"
+    # hint: the git command that copies a remote repo to your machine
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "git clone ..."
+
+  - step: 2
+    title: Activate virtual environment
+    prompt_windows: "_______ .venv\\Scripts\\activate"
+    prompt_unix:    "_______ .venv/bin/activate"
+    verify: "dvc _______"
+    # hint: the shell builtin that runs a script in the current shell session
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "source (unix) or just .venv\Scripts\activate (windows). dvc --version to verify."
+
+  - step: 3
+    title: Register the DVC remote
+    prompt: |
+      dvc remote add _______ origin https://dagshub.com/Preempt-Analytics/predictive-maintenance-capstone._______
+      dvc remote modify origin auth _______
+    why_two_commands:
+      command_1: "The first command _______."
+      command_2: "The second command _______."
+    # hint:
+    #   -d marks this remote as the default so you never need to name it explicitly.
+    #   auth basic tells DVC to send HTTP Basic credentials with every request.
+    #   Without the second line, DVC won't authenticate even if your token is set.
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: |
+    #   dvc remote add -d origin https://...predictive-maintenance-capstone.dvc
+    #   dvc remote modify origin auth basic
+
+  - step: 4
+    title: Store credentials locally
+    prompt: |
+      dvc remote modify _______ origin user YOUR_DAGSHUB_USERNAME
+      dvc remote modify _______ origin password YOUR_DAGSHUB_TOKEN
+    why_local_flag:
+      without_flag: "Without --local, credentials go to _______ which is _______."
+      with_flag:    "With --local, credentials go to _______ which is _______."
+    where_to_get_token: "DagsHub → _______ → Settings → _______ → generate with repo scope"
+    # hint:
+    #   The flag is --local.
+    #   Without it: .dvc/config — committed to git, credentials exposed to teammates.
+    #   With it:    .dvc/config.local — listed in .gitignore, stays on your machine only.
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: |
+    #   dvc remote modify --local origin user ...
+    #   dvc remote modify --local origin password ...
+
+  - step: 5
+    title: Download the dataset
+    prompt: "dvc _______"
+    expected_output: |
+      A  data/_______
+      1 file added
+    # hint: the opposite of push
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "dvc pull. File is data/ai4i2020.csv"
+
+  - step: 6
+    title: Check pipeline status
+    prompt: "dvc _______"
+    interpret_output: >
+      Stages listed as 'changed deps' mean _______.
+      This is _______ (normal / an error) because _______.
+    # hint: the command that shows what DVC thinks has changed
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: |
+    #   dvc status.
+    #   Changed deps means code files changed since the last dvc repro run.
+    #   This is normal — the data is correctly tracked, the pipeline just hasn't
+    #   been reproduced yet on this machine.
+
+
+# ── Section 3: Daily workflow ─────────────────────────────────────────────────
+
+daily_commands:
+
+  - task: "Get latest data after a teammate updates the dataset"
+    command: "dvc _______"
+    # hint: the opposite of push
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "dvc pull"
+
+  - task: "Preview what would rerun without actually running"
+    command: "dvc repro _______"
+    # hint: a flag that means simulate but don't execute
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "dvc repro --dry"
+
+  - task: "Rerun one specific training stage"
+    command: "dvc repro _______"
+    # hint: look at the stage names in dvc.yaml
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "dvc repro train_xgb_binary  (or any stage name from dvc.yaml)"
+
+  - task: "Rerun all stages whose dependencies changed"
+    command: "dvc _______"
+    # hint: same command as above, just without a stage name
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "dvc repro"
+
+  - task: "Do I need to run dvc push?"
+    answer_blank: "_______ — because _______."
+    # hint: think about who owns the data vs. who consumes it
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: |
+    #   No — only the person who updates the dataset needs to push.
+    #   Everyone else just pulls.
+
+
+# ── Section 4: Troubleshooting ────────────────────────────────────────────────
+
+troubleshooting:
+
+  - error: "403 Forbidden"
+    cause_blank: "_______"
+    # hint: check which URL you used in step 3
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "Used the .git GitHub URL instead of the .dvc DagsHub URL in step 3"
+
+  - error: "ERROR: no remote specified"
+    cause_blank: "_______"
+    # hint: which setup step registers the remote?
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "Step 3 was skipped — dvc remote add was never run"
+
+  - error: "dvc: command not found"
+    cause_blank: "_______"
+    # hint: what must be active before any project command works?
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "Virtual environment is not activated"
+
+  - error: "ERROR: failed to push/pull data"
+    cause_blank: "_______"
+    # hint: credentials are time-limited on DagsHub
+    #
+    #
+    #
+    #
+    #
+    #
+    # answer: "Token is expired or wrong — regenerate on DagsHub and redo step 4"

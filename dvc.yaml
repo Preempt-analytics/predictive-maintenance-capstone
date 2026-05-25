@@ -1,8 +1,12 @@
 # DVC Pipeline — Predictive Maintenance
 # =======================================
-# Defines one stage per experiment. Each stage knows:
-#   deps  → which files, if changed, should trigger a rerun
-#   cmd   → the exact command to reproduce this run
+# A DVC pipeline is a set of stages. Each stage records:
+#
+#   cmd   → the exact shell command that runs this experiment
+#   deps  → files that, if changed, should trigger a rerun of this stage
+#
+# DVC hashes every dep file. On `dvc repro`, it compares current hashes
+# to the last recorded ones. If anything changed → stage is stale → reruns.
 #
 # Usage:
 #   dvc repro                          # rerun all stages whose deps changed
@@ -10,16 +14,18 @@
 #   dvc repro --dry                    # preview what would rerun without running
 #
 # Note: outputs go to MLflow (not local files), so there are no `outs` entries.
-# DVC tracks reproducibility via deps — if modeling_pipeline.py, feature_transformation.py,
-# or the dataset change, the affected stages are marked as changed and will rerun.
-#
-# Tuning: stages below use fixed params for fast reproduction.
-# To run with Optuna tuning, call manually:
-#   python modeling_pipeline.py --experiment xgb_binary --tune --n-trials 50
+# DVC tracks reproducibility via deps only.
 
 stages:
+  # ── Worked example: read this one carefully before filling in the rest ────────
+  #
+  # Stage name convention: train_<model-family>_<target-type>
+  # cmd runs modeling_pipeline.py with --experiment matching an EXPERIMENTS key.
+  # deps lists every file whose change should invalidate (mark as needing re-run) this stage:
+  #   - the pipeline script itself
+  #   - the feature engineering module (shared with simulator)
+  #   - the dataset (tracked by DVC, not git)
 
-  # ── Tree-based: XGBoost ──────────────────────────────────────────────────────
   train_xgb_binary:
     cmd: python modeling_pipeline.py --experiment xgb_binary
     deps:
@@ -27,84 +33,103 @@ stages:
       - feature_transformation.py
       - data/ai4i2020.csv
 
-  train_xgb_multiclass:
-    cmd: python modeling_pipeline.py --experiment xgb_multiclass
-    deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+  # ── Fill this one in — same model family, different target ───────────────────
+  # Hint: multiclass means we predict which failure type, not just whether failure occurred.
+  # The --experiment value must match a key in the EXPERIMENTS dict in modeling_pipeline.py.
 
-  # ── Tree-based: LightGBM ─────────────────────────────────────────────────────
-  train_lgbm_binary:
-    cmd: python modeling_pipeline.py --experiment lgbm_binary
+  train_xgb_multiclass:
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
+
+  # ── Tree-based: LightGBM ──────────────────────────────────────────────────────
+  # Same pattern as XGBoost. Two stages: binary and multiclass.
+  # What changes between them? Only the --experiment argument.
+
+  train_lgbm_binary:
+    cmd: _______
+    deps:
+      - _______
+      - _______
+      - _______
 
   train_lgbm_multiclass:
-    cmd: python modeling_pipeline.py --experiment lgbm_multiclass
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
-  # ── Tree-based: Random Forest ────────────────────────────────────────────────
+  # ── Tree-based: Random Forest ─────────────────────────────────────────────────
+  # Why does Random Forest belong in the same pipeline structure as XGBoost/LightGBM?
+  # What do all three have in common that justifies identical deps?
+
   train_rf_binary:
-    cmd: python modeling_pipeline.py --experiment rf_binary
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
   train_rf_multiclass:
-    cmd: python modeling_pipeline.py --experiment rf_multiclass
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
-  # ── Probabilistic: Logistic Regression ──────────────────────────────────────
+  # ── Probabilistic: Logistic Regression ───────────────────────────────────────
+  # logreg uses needs_scaling=False in modeling_pipeline.py.
+  # Does that change anything in dvc.yaml? Why or why not?
+
   train_logreg_binary:
-    cmd: python modeling_pipeline.py --experiment logreg_binary
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
   train_logreg_multiclass:
-    cmd: python modeling_pipeline.py --experiment logreg_multiclass
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
-  # ── Distance-based: SVM ──────────────────────────────────────────────────────
+  # ── Distance-based: SVM ───────────────────────────────────────────────────────
+  # SVM uses needs_scaling=True — StandardScaler is inserted by modeling_pipeline.py.
+  # Should feature_transformation.py still be listed as a dep? Why?
+
   train_svm_binary:
-    cmd: python modeling_pipeline.py --experiment svm_binary
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
   train_svm_multiclass:
-    cmd: python modeling_pipeline.py --experiment svm_multiclass
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
-  # ── Neural Network: MLP ──────────────────────────────────────────────────────
+  # ── Neural Network: MLP ───────────────────────────────────────────────────────
+  # MLP also uses needs_scaling=True and has early_stopping built in.
+  # The deps are identical to every other stage — why is that consistent and correct?
+
   train_mlp_binary:
-    cmd: python modeling_pipeline.py --experiment mlp_binary
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
 
   train_mlp_multiclass:
-    cmd: python modeling_pipeline.py --experiment mlp_multiclass
+    cmd: _______
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
-      - data/ai4i2020.csv
+      - _______
+      - _______
+      - _______
