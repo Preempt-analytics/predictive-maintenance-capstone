@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+import yaml
 import click
 import mlflow
 import optuna
@@ -59,7 +60,10 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 load_dotenv()
 
-
+_p = yaml.safe_load(open("params.yaml"))["pipeline"]
+TEST_SIZE     = _p["test_size"]
+RANDOM_STATE  = _p["random_state"]
+CV_FOLDS      = _p["cv_folds"]
 
 
 DATA_PATH = Path("data/ai4i2020.csv")
@@ -97,7 +101,6 @@ class ExperimentConfig:
         classifier_factory:    Callable(imbalance_ratio: float) → unfitted classifier.
                                Owns all hyperparameters for this experiment.
                                Multiclass factories ignore imbalance_ratio (use lambda _).
-        test_size:             Fraction of data held out for evaluation. Default 0.2.
         description:           Optional free-text summary for documentation.
         notes:                 Optional scratchpad — not logged to MLflow.
         tags:                  Extra key/value pairs merged into MLflow run tags.
@@ -117,7 +120,6 @@ class ExperimentConfig:
     target_type: str       # "binary" or "multiclass"
     metric_average: str    # "binary" or "macro" — passed directly to sklearn metrics
     classifier_factory: Callable
-    test_size: float = 0.2
     description: str = ""
     notes: Optional[str] = None
     tags: dict = field(default_factory=dict)
@@ -585,7 +587,7 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
     X = df_processed.drop(columns=[config.target])
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, random_state=42, test_size=config.test_size, stratify=y
+        X, y, random_state=RANDOM_STATE, test_size=TEST_SIZE, stratify=y
     )
 
     # Guard: multiclass y_train contains string labels ("twf", "none", …).
@@ -655,7 +657,7 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
         **classifier.get_params(),        # full hyperparameter set from the classifier
         "model_family": config.model_family,
         "target_type":  config.target_type,
-        "test_size":    config.test_size,
+        "test_size":    TEST_SIZE,
     }
 
     return pipeline, metrics, params
@@ -718,7 +720,7 @@ def tune_model(
     # Tuning happens entirely within X_train — this prevents the test set from
     # influencing hyperparameter selection (which would be a form of data leakage).
     X_train, _, y_train, _ = train_test_split(
-        X, y, random_state=42, test_size=config.test_size, stratify=y
+        X, y, random_state=RANDOM_STATE, test_size=TEST_SIZE, stratify=y
     )
 
     # Compute imbalance ratio from training labels only (same as train_model).
@@ -731,7 +733,7 @@ def tune_model(
     # 5 folds = each trial trains 5 models and averages their scores.
     # We use a manual loop (not cross_val_score) so we can pass eval_set to each
     # fold's fit() call — required for LightGBM early stopping.
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
 
     # DictVectorizer is fit once on the full training set and reused across folds.
     # This is correct because the vectoriser only learns the feature schema (column

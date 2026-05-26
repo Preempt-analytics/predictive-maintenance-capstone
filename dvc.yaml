@@ -2,8 +2,11 @@
 # =======================================
 # A DVC pipeline is a set of stages. Each stage records:
 #
-#   cmd   → the exact shell command that runs this experiment
-#   deps  → files that, if changed, should trigger a rerun of this stage
+#   cmd    → the exact shell command that runs this experiment
+#   deps   → files that, if changed, should trigger a rerun of this stage
+#   params → specific keys inside params.yaml that, if changed, trigger a rerun
+#            of only the stages that reference them (unlike deps, which hash the
+#            whole file — params tracking is key-level, not file-level)
 #
 # DVC hashes every dep file. On `dvc repro`, it compares current hashes
 # to the last recorded ones. If anything changed → stage is stale → reruns.
@@ -14,7 +17,7 @@
 #   dvc repro --dry                    # preview what would rerun without running
 #
 # Note: outputs go to MLflow (not local files), so there are no `outs` entries.
-# DVC tracks reproducibility via deps only.
+# DVC tracks reproducibility via deps and params only.
 
 stages:
   # ── Worked example: read this one carefully before filling in the rest ────────
@@ -25,6 +28,9 @@ stages:
   #   - the pipeline script itself
   #   - the feature engineering module (shared with simulator)
   #   - the dataset (tracked by DVC, not git)
+  # params lists the keys inside params.yaml that this stage depends on.
+  #   A change to pipeline.test_size invalidates all stages (correct — it affects
+  #   every train/test split). A change to a key not listed here has no effect.
 
   train_xgb_binary:
     cmd: python modeling_pipeline.py --experiment xgb_binary
@@ -32,6 +38,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   # ── Fill this one in — same model family, different target ───────────────────
   # Hint: multiclass means we predict which failure type, not just whether failure occurred.
@@ -43,7 +52,10 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
-      
+    params:
+      - params.yaml:
+        - pipeline
+
   # ── Tree-based: LightGBM ──────────────────────────────────────────────────────
   # Same pattern as XGBoost. Two stages: binary and multiclass.
   # What changes between them? Only the --experiment argument.
@@ -54,6 +66,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   train_lgbm_multiclass:
     cmd: python modeling_pipeline.py --experiment lgbm_multiclass
@@ -61,6 +76,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   # ── Tree-based: Random Forest ─────────────────────────────────────────────────
   # Why does Random Forest belong in the same pipeline structure as XGBoost/LightGBM?
@@ -72,6 +90,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   train_rf_multiclass:
     cmd: python modeling_pipeline.py --experiment rf_multiclass
@@ -79,6 +100,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   # ── Probabilistic: Logistic Regression ───────────────────────────────────────
   # logreg uses needs_scaling=False in modeling_pipeline.py.
@@ -90,6 +114,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   train_logreg_multiclass:
     cmd: python modeling_pipeline.py --experiment logreg_multiclass
@@ -97,6 +124,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   # ── Distance-based: SVM ───────────────────────────────────────────────────────
   # SVM uses needs_scaling=True — StandardScaler is inserted by modeling_pipeline.py.
@@ -108,6 +138,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   train_svm_multiclass:
     cmd: python modeling_pipeline.py --experiment svm_multiclass
@@ -115,7 +148,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
-  
+    params:
+      - params.yaml:
+        - pipeline
 
   # ── Neural Network: MLP ───────────────────────────────────────────────────────
   # MLP also uses needs_scaling=True and has early_stopping built in.
@@ -127,6 +162,9 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
 
   train_mlp_multiclass:
     cmd: python modeling_pipeline.py --experiment mlp_multiclass
@@ -134,3 +172,6 @@ stages:
       - modeling_pipeline.py
       - feature_transformation.py
       - data/ai4i2020.csv
+    params:
+      - params.yaml:
+        - pipeline
