@@ -23,7 +23,7 @@ stages:
   # ── Worked example: read this one carefully before filling in the rest ────────
   #
   # Stage name convention: train_<model-family>_<target-type>
-  # cmd runs modeling_pipeline.py with --experiment matching an EXPERIMENTS key.
+  # cmd runs src/modeling_pipeline.py with --experiment matching an EXPERIMENTS key.
   # deps lists every file whose change should invalidate (mark as needing re-run) this stage:
   #   - the pipeline script itself
   #   - the feature engineering module (shared with simulator)
@@ -33,10 +33,10 @@ stages:
   #   every train/test split). A change to a key not listed here has no effect.
 
   train_xgb_binary:
-    cmd: python modeling_pipeline.py --experiment xgb_binary
+    cmd: python src/modeling_pipeline.py --experiment xgb_binary
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
@@ -47,10 +47,10 @@ stages:
   # The --experiment value must match a key in the EXPERIMENTS dict in modeling_pipeline.py.
 
   train_xgb_multiclass:
-    cmd: python modeling_pipeline.py --experiment xgb_multiclass
+    cmd: python src/modeling_pipeline.py --experiment xgb_multiclass
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
@@ -61,20 +61,20 @@ stages:
   # What changes between them? Only the --experiment argument.
 
   train_lgbm_binary:
-    cmd: python modeling_pipeline.py --experiment lgbm_binary
+    cmd: python src/modeling_pipeline.py --experiment lgbm_binary
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
         - pipeline
 
   train_lgbm_multiclass:
-    cmd: python modeling_pipeline.py --experiment lgbm_multiclass
+    cmd: python src/modeling_pipeline.py --experiment lgbm_multiclass
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
@@ -85,20 +85,20 @@ stages:
   # What do all three have in common that justifies identical deps?
 
   train_rf_binary:
-    cmd: python modeling_pipeline.py --experiment rf_binary
+    cmd: python src/modeling_pipeline.py --experiment rf_binary
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
         - pipeline
 
   train_rf_multiclass:
-    cmd: python modeling_pipeline.py --experiment rf_multiclass
+    cmd: python src/modeling_pipeline.py --experiment rf_multiclass
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
@@ -109,20 +109,20 @@ stages:
   # Does that change anything in dvc.yaml? Why or why not?
 
   train_logreg_binary:
-    cmd: python modeling_pipeline.py --experiment logreg_binary
+    cmd: python src/modeling_pipeline.py --experiment logreg_binary
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
         - pipeline
 
   train_logreg_multiclass:
-    cmd: python modeling_pipeline.py --experiment logreg_multiclass
+    cmd: python src/modeling_pipeline.py --experiment logreg_multiclass
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
@@ -133,20 +133,20 @@ stages:
   # Should feature_transformation.py still be listed as a dep? Why?
 
   train_svm_binary:
-    cmd: python modeling_pipeline.py --experiment svm_binary
+    cmd: python src/modeling_pipeline.py --experiment svm_binary
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
         - pipeline
 
   train_svm_multiclass:
-    cmd: python modeling_pipeline.py --experiment svm_multiclass
+    cmd: python src/modeling_pipeline.py --experiment svm_multiclass
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
@@ -157,20 +157,20 @@ stages:
   # The deps are identical to every other stage — why is that consistent and correct?
 
   train_mlp_binary:
-    cmd: python modeling_pipeline.py --experiment mlp_binary
+    cmd: python src/modeling_pipeline.py --experiment mlp_binary
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
         - pipeline
 
   train_mlp_multiclass:
-    cmd: python modeling_pipeline.py --experiment mlp_multiclass
+    cmd: python src/modeling_pipeline.py --experiment mlp_multiclass
     deps:
-      - modeling_pipeline.py
-      - feature_transformation.py
+      - src/modeling_pipeline.py
+      - src/feature_transformation.py
       - data/ai4i2020.csv
     params:
       - params.yaml:
