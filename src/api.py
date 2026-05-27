@@ -62,7 +62,7 @@ from pydantic import BaseModel, Field
 # with `uvicorn src.api:app` from the project root or `python api.py` from src/.
 # This is the same pattern the simulator uses — one source of truth for features.
 sys.path.insert(0, str(Path(__file__).parent))
-from feature_transformation import FEATURES, engineer_features  # noqa: E402
+from feature_transformation import FEATURES, FAILURE_TYPE_CLASSES, engineer_features  # noqa: E402
 
 load_dotenv()
 
@@ -219,18 +219,18 @@ async def lifespan(app: FastAPI):
     try:
         model = mlflow.sklearn.load_model(uri)
 
-        # TODO: Resolve the actual numeric version from the @production alias.
-        # mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, "production")
-        # returns a ModelVersion object with a .version attribute.
-        # For now we store the alias string; swap this for the version number
-        # once you've read the MlflowClient docs.
-        resolved_version = None
+        try:
+            mv = mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, "production")
+            resolved_version = mv.version
+        except Exception:
+            resolved_version = None
 
-        app_state["model"]         = model
-        app_state["model_name"]    = MODEL_NAME
-        app_state["model_version"] = resolved_version
-        app_state["model_loaded"]  = True
-        print(f"  Model ready: {MODEL_NAME}@production")
+        app_state["model"]          = model
+        app_state["model_name"]     = MODEL_NAME
+        app_state["model_version"]  = resolved_version
+        app_state["model_loaded"]   = True
+        app_state["is_multiclass"]  = MODEL_NAME.endswith("-multiclass")
+        print(f"  Model ready: {MODEL_NAME}@production (version {resolved_version})")
 
     except Exception as exc:
         # Intentional: the server starts in a degraded state rather than
@@ -291,7 +291,7 @@ def reading_to_raw_dict(reading: SensorReading) -> dict:
     }
 
 
-def run_prediction(model, reading: SensorReading) -> tuple[int, str | None, float]:
+def run_prediction(model, reading: SensorReading, is_multiclass: bool = False) -> tuple[int, str | None, float]:
     """Apply feature engineering and return a normalised prediction tuple.
 
     Keeping inference logic here (not inside the route handlers) means
@@ -299,37 +299,32 @@ def run_prediction(model, reading: SensorReading) -> tuple[int, str | None, floa
     and model call. One change here updates both endpoints simultaneously.
 
     Args:
-        model:   Fitted sklearn Pipeline from the MLflow registry.
-        reading: Validated Pydantic SensorReading from the request body.
+        model:          Fitted sklearn Pipeline from the MLflow registry.
+        reading:        Validated Pydantic SensorReading from the request body.
+        is_multiclass:  True when the loaded model targets failure_type (6 classes).
 
     Returns:
         (predicted_failure, failure_type, failure_probability)
-        predicted_failure: 0 or 1
-        failure_type:      None for binary; type string for multiclass
-        failure_probability: float in [0, 1]
+        predicted_failure:   0 or 1
+        failure_type:        None for binary; human-readable label for multiclass
+        failure_probability: model confidence — probability of the predicted class
     """
     raw         = reading_to_raw_dict(reading)
     df_features = engineer_features(pd.DataFrame([raw]))
     record      = df_features[FEATURES].to_dict(orient="records")
 
-    # Binary prediction path — works for any model trained on the binary target.
-    # The model is a sklearn Pipeline (DictVectorizer → classifier), so predict()
-    # and predict_proba() work identically regardless of the classifier inside.
-    predicted    = int(model.predict(record)[0])
-    failure_prob = float(model.predict_proba(record)[0][1])
-    failure_type = None
-
-    # TODO: Add multiclass support here.
-    # When MODEL_NAME ends in "-multiclass", the model predicts a string label
-    # ("hdf", "twf", "pwf", "osf", "rnf", or "none") instead of 0/1.
-    # Two lines to replace the block above for multiclass:
-    #
-    #   failure_type = str(model.predict(record)[0])
-    #   predicted    = 0 if failure_type == "none" else 1
-    #   failure_prob = float(max(model.predict_proba(record)[0]))
-    #
-    # Hint: how would you detect whether the loaded model is binary or multiclass
-    # without hardcoding the model name? Look at model.classes_ after loading.
+    if is_multiclass:
+        # Multiclass models predict an integer label (0–5). Decode it back to
+        # the human-readable string using the same mapping used during training.
+        pred_int     = int(model.predict(record)[0])
+        failure_type = FAILURE_TYPE_CLASSES[pred_int]
+        predicted    = 0 if failure_type == "none" else 1
+        proba_row    = model.predict_proba(record)[0]
+        failure_prob = float(proba_row[pred_int])
+    else:
+        predicted    = int(model.predict(record)[0])
+        failure_prob = float(model.predict_proba(record)[0][1])
+        failure_type = None
 
     return predicted, failure_type, failure_prob
 
@@ -376,8 +371,9 @@ async def predict(reading: SensorReading) -> PredictionResponse:
             ),
         )
 
-    model                        = app_state["model"]
-    predicted, failure_type, prob = run_prediction(model, reading)
+    model                         = app_state["model"]
+    is_multiclass                 = app_state.get("is_multiclass", False)
+    predicted, failure_type, prob = run_prediction(model, reading, is_multiclass)
 
     return PredictionResponse(
         machine_failure=predicted,
@@ -394,40 +390,35 @@ async def predict_batch(batch: BatchRequest) -> BatchResponse:
 
     Prefer this endpoint over calling /predict repeatedly when you have
     buffered readings — it avoids one HTTP round-trip per reading.
-
-    ── YOUR TASK ────────────────────────────────────────────────────────────────
-    This endpoint shares the same model-loading and feature-engineering logic
-    as /predict. Implement it by following these steps:
-
-    Step 1 — Guard clause (same as /predict):
-      If the model is not loaded, raise an HTTPException with status 503.
-      Reuse the same detail message for consistency.
-
-    Step 2 — Run predictions:
-      Iterate over batch.readings. For each reading, call run_prediction()
-      and build a PredictionResponse. Collect results in a list.
-
-      Hint: a list comprehension works, but a for-loop is easier to read
-      while you're learning the flow.
-
-    Step 3 — Aggregate:
-      Count total_failures_predicted using sum() over your results list.
-      Think about: what field on PredictionResponse tells you whether a
-      failure was predicted?
-
-    Step 4 — Return a BatchResponse with:
-        predictions             = your list of PredictionResponse objects
-        total_readings          = len(batch.readings)
-        total_failures_predicted = your count from Step 3
-
-    Bonus question — can you vectorise?
-      run_prediction() processes one reading at a time. A real high-throughput
-      service would build one DataFrame from all readings and call model.predict()
-      once. Where would you make that change — here or inside run_prediction()?
-    ─────────────────────────────────────────────────────────────────────────────
     """
-    raise NotImplementedError(
-        "Batch endpoint not yet implemented. Follow the TODO steps in the source."
+    if not app_state.get("model_loaded"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Model is not loaded. Check /health for details. "
+                "The server may still be starting up or the MLflow registry "
+                "may not have a model tagged @production."
+            ),
+        )
+
+    model         = app_state["model"]
+    is_multiclass = app_state.get("is_multiclass", False)
+
+    predictions = []
+    for reading in batch.readings:
+        predicted, failure_type, prob = run_prediction(model, reading, is_multiclass)
+        predictions.append(PredictionResponse(
+            machine_failure=predicted,
+            failure_probability=round(prob, 4),
+            failure_type=failure_type,
+            model_name=app_state["model_name"],
+            model_version=app_state.get("model_version"),
+        ))
+
+    return BatchResponse(
+        predictions=predictions,
+        total_readings=len(batch.readings),
+        total_failures_predicted=sum(p.machine_failure for p in predictions),
     )
 
 
@@ -437,20 +428,22 @@ async def reload_model() -> dict:
 
     Useful after promoting a new model version in the MLflow UI — call this
     endpoint and the next prediction will use the updated model.
-
-    ── YOUR TASK ────────────────────────────────────────────────────────────────
-    Implement this endpoint by repeating the model-loading logic from the
-    lifespan startup block:
-
-      1. Build the URI from MODEL_NAME.
-      2. Call mlflow.sklearn.load_model(uri).
-      3. Update app_state["model"] and app_state["model_loaded"].
-      4. Return a dict confirming the reload: {"status": "reloaded", "model": MODEL_NAME}
-
-    Think about: what should this endpoint return if loading fails?
-    Should it leave the old model in place or mark the server as degraded?
-    ─────────────────────────────────────────────────────────────────────────────
     """
-    raise NotImplementedError(
-        "Model reload endpoint not yet implemented. Follow the TODO steps in the source."
-    )
+    uri = f"models:/{MODEL_NAME}@production"
+    try:
+        model = mlflow.sklearn.load_model(uri)
+        try:
+            mv = mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, "production")
+            version = mv.version
+        except Exception:
+            version = None
+        app_state["model"]         = model
+        app_state["model_loaded"]  = True
+        app_state["model_version"] = version
+        app_state["is_multiclass"] = MODEL_NAME.endswith("-multiclass")
+        return {"status": "reloaded", "model": MODEL_NAME, "version": version}
+    except Exception as exc:
+        # Keep the old model in place so predictions can still be served.
+        # The caller can check /health to see the stale version number.
+        app_state["error"] = str(exc)
+        raise HTTPException(status_code=503, detail=f"Reload failed: {exc}")
