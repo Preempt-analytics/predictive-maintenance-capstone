@@ -68,7 +68,7 @@ CV_FOLDS      = _p["cv_folds"]
 
 DATA_PATH = Path("data/ai4i2020.csv")
 
-from feature_transformation import FEATURES, engineer_features  # noqa: E402
+from feature_transformation import FEATURES, FAILURE_TYPE_TO_INT, engineer_features  # noqa: E402
 
 
 
@@ -530,7 +530,7 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
         failure_cols = ["twf", "hdf", "pwf", "osf", "rnf"]
         def resolve_label(row):
             active = [c for c in failure_cols if row[c] == 1]
-            return active[0] if active else "none"
+            return FAILURE_TYPE_TO_INT[active[0] if active else "none"]
         df["failure_type"] = df.apply(resolve_label, axis=1)
     
     return df[FEATURES + [config.target]]
