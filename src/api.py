@@ -68,15 +68,16 @@ load_dotenv()
 
 
 # ── Environment ────────────────────────────────────────────────────────────────
-# MODEL_NAME controls which registered model family the server loads.
-# Override with an environment variable to switch families without code changes:
-#   MODEL_NAME=lgbm-binary uvicorn src.api:app
+# MODEL_NAME selects which prediction task the server handles.
+# Override with an environment variable to switch between binary and multiclass:
+#   MODEL_NAME=predictive-maintenance-multiclass uvicorn src.api:app
 #
-# The @production alias always resolves to the best version within that family.
-# Changing which version is production happens in the MLflow UI — not here.
+# Which model family is @production is decided in the MLflow UI — not here.
+# Promoting a new family (e.g. LightGBM over XGBoost) = move the alias in the UI,
+# then call POST /model/reload. Zero code or config changes required.
 
 import os
-MODEL_NAME = os.getenv("MODEL_NAME", "xgboost-binary")
+MODEL_NAME = os.getenv("MODEL_NAME", "predictive-maintenance-binary")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -13,16 +13,16 @@ Supported experiments (pass via --experiment):
 
 Usage:
     # Standard training run
-    python modeling_pipeline.py --experiment xgb_binary
-    python modeling_pipeline.py --experiment lgbm_binary --cml-run
+    python src/modeling_pipeline.py --experiment xgb_binary
+    python src/modeling_pipeline.py --experiment lgbm_binary --cml-run
 
     # Hyperparameter tuning with Optuna
-    python modeling_pipeline.py --experiment lgbm_binary --tune
-    python modeling_pipeline.py --experiment lgbm_binary --tune --n-trials 50
-    python modeling_pipeline.py --experiment svm_binary --tune --n-trials 50
+    python src/modeling_pipeline.py --experiment lgbm_binary --tune
+    python src/modeling_pipeline.py --experiment lgbm_binary --tune --n-trials 50
+    python src/modeling_pipeline.py --experiment svm_binary --tune --n-trials 50
 
     # Tuning + CML report in one run
-    python modeling_pipeline.py --experiment lgbm_binary --tune --n-trials 30 --cml-run
+    python src/modeling_pipeline.py --experiment lgbm_binary --tune --n-trials 30 --cml-run
 
 To add a new experiment: add one entry to EXPERIMENTS. No function code changes needed.
 To enable tuning for an experiment: add a param_space lambda to its ExperimentConfig.
@@ -134,7 +134,7 @@ class ExperimentConfig:
 EXPERIMENTS: dict[str, ExperimentConfig] = {
     "xgb_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/xgboost/binary",
-        registered_model_name="xgboost-binary",
+        registered_model_name="predictive-maintenance-binary",
         model_family="xgboost",
         target="machine_failure",
         target_type="binary",
@@ -163,7 +163,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "xgb_multiclass": ExperimentConfig(
         experiment_name="predictive-maintenance/xgboost/multiclass",
-        registered_model_name="xgboost-multiclass",
+        registered_model_name="predictive-maintenance-multiclass",
         model_family="xgboost",
         target="failure_type",
         target_type="multiclass",
@@ -192,7 +192,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "lgbm_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/lightgbm/binary",
-        registered_model_name="lightgbm-binary",
+        registered_model_name="predictive-maintenance-binary",
         model_family="lightgbm",
         target="machine_failure",
         target_type="binary",
@@ -224,7 +224,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "lgbm_multiclass": ExperimentConfig(
         experiment_name="predictive-maintenance/lightgbm/multiclass",
-        registered_model_name="lightgbm-multiclass",
+        registered_model_name="predictive-maintenance-multiclass",
         model_family="lightgbm",
         target="failure_type",
         target_type="multiclass",
@@ -251,7 +251,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
     ),
     "rf_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/random-forest/binary",
-        registered_model_name="random-forest-binary",
+        registered_model_name="predictive-maintenance-binary",
         model_family="random_forest",
         target="machine_failure",
         target_type="binary",
@@ -266,7 +266,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
     ),
     "rf_multiclass": ExperimentConfig(
         experiment_name="predictive-maintenance/random-forest/multiclass",
-        registered_model_name="random-forest-multiclass",
+        registered_model_name="predictive-maintenance-multiclass",
         model_family="random_forest",
         target="failure_type",
         target_type="multiclass",
@@ -280,7 +280,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
     ),
     "logreg_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/logreg/binary",
-        registered_model_name="logreg-binary",
+        registered_model_name="predictive-maintenance-binary",
         model_family="logreg",
         target="machine_failure",
         target_type="binary",
@@ -293,7 +293,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
     ),
     "logreg_multiclass": ExperimentConfig(
         experiment_name="predictive-maintenance/logistic-regression/multiclass",
-        registered_model_name="logreg-multiclass",
+        registered_model_name="predictive-maintenance-multiclass",
         model_family="logreg",
         target="failure_type",
         target_type="multiclass",
@@ -324,7 +324,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
     # overhead via Platt scaling — disabled during CV trials for speed.
     "svm_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/svm/binary",
-        registered_model_name="svm-binary",
+        registered_model_name="predictive-maintenance-binary",
         model_family="svm",
         target="machine_failure",
         target_type="binary",
@@ -345,7 +345,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "svm_multiclass": ExperimentConfig(
         experiment_name="predictive-maintenance/svm/multiclass",
-        registered_model_name="svm-multiclass",
+        registered_model_name="predictive-maintenance-multiclass",
         model_family="svm",
         target="failure_type",
         target_type="multiclass",
@@ -428,7 +428,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "mlp_binary": ExperimentConfig(
         experiment_name="predictive-maintenance/mlp/binary",
-        registered_model_name="mlp-binary",
+        registered_model_name="predictive-maintenance-binary",
         model_family="mlp",
         target="machine_failure",
         target_type="binary",
@@ -472,7 +472,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "mlp_multiclass": ExperimentConfig(
         experiment_name="predictive-maintenance/mlp/multiclass",
-        registered_model_name="mlp-multiclass",
+        registered_model_name="predictive-maintenance-multiclass",
         model_family="mlp",
         target="failure_type",
         target_type="multiclass",
@@ -612,11 +612,15 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
     if config.needs_scaling:
         pipeline = make_pipeline(DictVectorizer(sparse=False), StandardScaler(), classifier)
     else:
-        pipeline = make_pipeline(DictVectorizer(), classifier)
-    # set_output("pandas") tells every transformer in the pipeline to output a
-    # named DataFrame instead of a numpy array. LightGBM then receives column
-    # names and stops warning "X does not have valid feature names".
-    pipeline.set_output(transform="pandas")
+        pipeline = make_pipeline(DictVectorizer(sparse=False), classifier)
+    # LightGBM warns "X does not have valid feature names" when it receives a
+    # numpy array. set_output("pandas") fixes this by making every transformer
+    # output a named DataFrame. Restricted to LightGBM only: applying it
+    # unconditionally causes XGBoost to be probed twice during fit (sklearn 1.8
+    # internal behaviour), which corrupts the label encoder state and raises
+    # "Invalid classes inferred from unique values of y".
+    if config.model_family == "lightgbm":
+        pipeline.set_output(transform="pandas")
     pipeline.fit(X_train_records, y_train)
 
     y_pred_train = pipeline.predict(X_train_records)

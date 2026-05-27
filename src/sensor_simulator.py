@@ -32,13 +32,13 @@ Three simulation modes control how failure rates change over time:
 
 Binary vs multiclass
 --------------------
-  --target binary      → loads xgboost-binary/Production by default.
+  --target binary      → loads predictive-maintenance-binary@production by default.
                          Output: FAILURE / normal + probability score.
-  --target multiclass  → loads xgboost-multiclass/Production by default.
+  --target multiclass  → loads predictive-maintenance-multiclass@production by default.
                          Output: predicted failure type (hdf, twf, pwf, osf, rnf, none).
 
-Use --model-name to override the family (e.g. lgbm-binary, svm-multiclass).
-The Production tag always controls which version within that family runs.
+Use --model-name to load a specific registered model (e.g. for testing a single family).
+The @production alias always controls which version within that model runs.
 
 Usage
 -----
@@ -218,9 +218,8 @@ def store_reading(conn: sqlite3.Connection, row: dict) -> None:
 def resolve_model_name(target: str, model_name_override: str | None) -> str:
     """Return the registered model name to load, with sensible defaults.
 
-    The model name determines the family (xgboost-binary, lgbm-multiclass, etc.).
-    The Production tag determines which version within that family runs.
-    Passing --model-name overrides both defaults.
+    The @production alias on the returned model name determines which version runs.
+    Passing --model-name overrides the default (useful for testing a specific family).
 
     Args:
         target:              "binary" or "multiclass".
@@ -231,7 +230,7 @@ def resolve_model_name(target: str, model_name_override: str | None) -> str:
     """
     if model_name_override:
         return model_name_override
-    return "xgboost-binary" if target == "binary" else "xgboost-multiclass"
+    return "predictive-maintenance-binary" if target == "binary" else "predictive-maintenance-multiclass"
 
 
 def load_production_model(model_name: str):
@@ -569,9 +568,9 @@ def run_simulation(
 @click.option(
     "--model-name", default=None,
     help=(
-        "Override the registered model name (e.g. lgbm-binary, svm-multiclass). "
-        "Defaults to xgboost-binary for --target binary, "
-        "xgboost-multiclass for --target multiclass."
+        "Override the registered model name (e.g. to test a specific family). "
+        "Defaults to predictive-maintenance-binary for --target binary, "
+        "predictive-maintenance-multiclass for --target multiclass."
     ),
 )
 def main(
