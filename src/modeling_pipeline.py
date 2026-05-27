@@ -891,21 +891,70 @@ def log_model(
         params:   Hyperparameters produced by train_model() — logged as params.
         config:   Active experiment config. Supplies tags and the registered model name.
     """
-    with mlflow.start_run():
-        mlflow.set_tags({
+    with mlflow.start_run(
+        run_name=config.experiment_name,
+        description=(
+            f"{config.model_family} · {config.target_type} · "
+            f"registered as {config.registered_model_name}"
+        ),
+        tags={
             "model_family":    config.model_family,
             "target_type":     config.target_type,
             "target":          config.target,
             "experiment_name": config.experiment_name,
             "developer":       os.getenv("MLFLOW_TRACKING_USERNAME", "unknown"),
-        })
+        },
+    ):
         mlflow.log_params(params)
         mlflow.log_metrics(metrics)
-        mlflow.sklearn.log_model(
+        model_info = mlflow.sklearn.log_model(
             pipeline,
-            artifact_path="model",
+            name="model",
             registered_model_name=config.registered_model_name,
         )
+
+    # ── Registry metadata ──────────────────────────────────────────────────────
+    # log_model() registers the model and creates a new version. We use
+    # MlflowClient to write description and tags onto both levels:
+    #
+    #   Registered model  — the family entry (predictive-maintenance-binary).
+    #                       Description and tags appear on the Models landing page.
+    #   Model version     — the specific version just created by this run.
+    #                       Description and tags appear on the version detail page
+    #                       (the screenshot with "Description: None").
+    #
+    # This must run OUTSIDE the `with mlflow.start_run()` block because
+    # MlflowClient operates on the registry directly, not on the active run.
+    client  = mlflow.MlflowClient()
+    version = model_info.registered_model_version
+
+    # Registered model (family-level) — written once; subsequent runs overwrite.
+    client.update_registered_model(
+        name=config.registered_model_name,
+        description=(
+            f"Predictive maintenance classifier — {config.target_type} target. "
+            f"Trained on AI4I 2020 dataset. "
+            f"All model families ({', '.join(['xgboost', 'lightgbm', 'random_forest', 'logreg', 'svm', 'mlp'])}) "
+            f"compete for the @production alias on this registry entry."
+        ),
+    )
+    client.set_registered_model_tag(config.registered_model_name, "model_family", config.model_family)
+    client.set_registered_model_tag(config.registered_model_name, "target_type",  config.target_type)
+    client.set_registered_model_tag(config.registered_model_name, "project",      "predictive-maintenance-capstone")
+
+    # Model version (this specific run) — unique per version.
+    client.update_model_version(
+        name=config.registered_model_name,
+        version=version,
+        description=(
+            f"Model family : {config.model_family}\n"
+            f"Target       : {config.target} ({config.target_type})\n"
+            f"F1 (test)    : {metrics.get('test_f1', 'n/a')}\n"
+            f"Developer    : {os.getenv('MLFLOW_TRACKING_USERNAME', 'unknown')}"
+        ),
+    )
+    client.set_model_version_tag(config.registered_model_name, version, "model_family", config.model_family)
+    client.set_model_version_tag(config.registered_model_name, version, "developer",    os.getenv("MLFLOW_TRACKING_USERNAME", "unknown"))
 
 
 # ── CML report ─────────────────────────────────────────────────────────────────
