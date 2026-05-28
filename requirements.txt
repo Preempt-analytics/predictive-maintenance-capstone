@@ -28,3 +28,4 @@ plotly
 catboost
 click
 load_dotenv
+evidently

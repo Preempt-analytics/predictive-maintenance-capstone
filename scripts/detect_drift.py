@@ -1,0 +1,421 @@
+"""
+scripts/detect_drift.py
+========================
+Detect whether live sensor readings have drifted away from the training
+distribution using Evidently AI.
+
+WHY THIS SCRIPT EXISTS
+──────────────────────
+A model is only as good as the match between what it was trained on and what
+it sees in production.  If the factory floor changes — new machines, seasonal
+temperature swings, changed maintenance schedules — the model's predictions
+degrade silently.  You won't see an error; you'll just see quietly wrong
+predictions until a technician notices a missed failure.
+
+Drift detection is your early-warning system.  Run it daily (or hook it into
+CI), and it tells you: "the sensor readings look different from training —
+consider retraining before the model drifts out of accuracy."
+
+HOW IT WORKS (four stages)
+──────────────────────────
+  Stage 1 — Load REFERENCE data  : the training CSV (what the model learned).
+  Stage 2 — Load CURRENT data    : recent readings from simulation.db.
+  Stage 3 — Run Evidently        : one statistical test per feature column.
+  Stage 4 — Verdict              : PASS or FAIL based on your threshold.
+
+KEY VOCABULARY (read once, then the code will make sense)
+──────────────────────────────────────────────────────────
+  Reference data    : historical baseline — the distribution the model knows.
+  Current data      : recent live readings you want to compare against.
+  Drift share       : fraction of features where the statistical test detected
+                      a meaningful shift (e.g. 0.33 = 3 of 9 features drifted).
+  KS test           : Kolmogorov-Smirnov test — the default for continuous
+                      features (temperature, rpm, torque...).  Outputs a p-value:
+                      p < 0.05 means "very unlikely these two samples come from
+                      the same distribution" → drift detected.
+  Chi-squared test  : used for categorical features (machine type L/M/H).
+                      Tests whether the proportions of categories have changed.
+  DRIFT_THRESHOLD   : the fraction of drifted features above which we raise an
+                      alert.  You set this — see TODO A below.
+
+EVIDENTLY API (version 0.7.x) — what is different from older tutorials
+──────────────────────────────────────────────────────────────────────────
+  Older Evidently (< 0.7):  from evidently.report import Report
+  This version (0.7.x):     from evidently import Report
+                             from evidently.presets import DataDriftPreset
+
+  report.run() now RETURNS a Snapshot object (it used to modify report in place).
+  Use snapshot.save_html(), snapshot.dict() — NOT report.save_html().
+"""
+
+# ── Section 1: Imports ─────────────────────────────────────────────────────────
+# Standard library
+import argparse           # parse --flags from the command line
+import pathlib            # Path objects are safer than raw strings for file paths
+import sqlite3            # built-in SQLite adapter — no install required
+import sys                # sys.exit(1) signals FAIL to the calling shell / CI
+
+# Third-party
+import pandas as pd       # tabular data; Evidently expects DataFrames
+
+# Evidently 0.7.x API.
+# Report      : the container that holds one or more metric objects.
+# DataDriftPreset : shorthand that adds per-column drift metrics for every feature.
+#                   Produces the interactive histograms you see in the HTML report.
+# DriftedColumnsCount : a single aggregate metric: "N of M features drifted".
+#                       We use this to extract a numeric drift_share for the verdict.
+from evidently import Report
+from evidently.presets import DataDriftPreset
+from evidently.metrics import DriftedColumnsCount
+
+# Our own project modules — feature definitions shared between training and inference.
+# sys.path trick: lets Python find src/ without installing the package.
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "src"))
+from feature_transformation import FEATURES, engineer_features   # 9 feature names + transforms
+
+
+# ── Section 2: Configuration constants ────────────────────────────────────────
+# Path defaults — all relative to the project root so the script works from any
+# working directory (as long as you run it from the repo root or use --csv / --db).
+_ROOT        = pathlib.Path(__file__).parent.parent
+DATA_CSV     = _ROOT / "data" / "ai4i2020.csv"     # reference: original training data
+SIMULATION_DB = _ROOT / "simulation.db"            # current: live simulation readings
+REPORT_DIR   = _ROOT / "reports"                   # where the HTML report is saved
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TODO A  (Easy — 5 min):  Choose your drift threshold
+# ─────────────────────────────────────────────────────────────────────────────
+# DRIFT_THRESHOLD is the fraction of features that must drift before we raise
+# a FAIL verdict.  We have 9 features, so:
+#   0.11 ≈ 1/9  → alert if even ONE feature shifts  (very sensitive, noisy)
+#   0.33 ≈ 3/9  → alert if a third of features shift  (common starting point)
+#   0.50 = 5/9  → alert only if a majority of features shift  (permissive)
+#
+# Your task:
+#   1. Decide what threshold makes sense for a predictive maintenance system.
+#      Hint: missing a real drift event is more costly than a false alarm here.
+#   2. Replace the placeholder value below with your chosen number.
+#   3. Add a one-line comment explaining WHY you chose it.
+#      (Example: "# 1/9 — any single feature drift is worth investigating in
+#                           a safety-critical context")
+#
+# Run with --threshold to override at runtime without editing this file.
+
+DRIFT_THRESHOLD = 0.33   # TODO A: is this the right value? change it and explain why.
+
+
+# ── Section 3: Load reference data ────────────────────────────────────────────
+def load_reference_data(csv_path: pathlib.Path) -> pd.DataFrame:
+    """Read the training CSV, run feature engineering, return the 9 feature columns.
+
+    WHY engineer_features() here?
+    The model was trained on the OUTPUT of engineer_features() — the renamed
+    columns plus power_kw, temp_diff_kelvin, mechanical_stress.  Evidently must
+    compare the same feature space that the model sees; otherwise you're comparing
+    apples to oranges.  This is the same training-serving skew concern that
+    feature_transformation.py was designed to prevent.
+
+    WHY sample / dropna?
+    We drop NaN rows so Evidently's statistical tests get clean input.
+    A few missing values in a 10 000-row training set is normal; they're noise,
+    not signal worth drifting on.
+    """
+    df = pd.read_csv(csv_path)          # load the original AI4I dataset
+    df = engineer_features(df)          # rename columns + compute derived features
+    df = df[FEATURES].dropna()          # keep only the 9 model features; drop NaN rows
+    return df
+
+
+# ── Section 4: Load current data ──────────────────────────────────────────────
+def load_current_data(db_path: pathlib.Path, since: str | None = None) -> pd.DataFrame:
+    """Read recent sensor readings from SQLite, return the same 9 feature columns.
+
+    WHY skip engineer_features() here?
+    The simulator already stores engineered features in simulation.db — it
+    computed power_kw, temp_diff_kelvin, and mechanical_stress at write time
+    using the same feature_transformation.py contract.  Re-running engineer_features()
+    would double-apply the transform.  See sensor_simulator.py store_reading().
+
+    WHY SELECT with column aliases?
+    The DB column is machine_type; FEATURES expects 'type' (the renamed version).
+    The SELECT alias renames it in one step, so the returned DataFrame matches
+    the reference DataFrame column for column.
+    """
+    conn = sqlite3.connect(db_path)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TODO B  (Medium — 15 min):  Add a sliding-window filter on timestamp
+    # ─────────────────────────────────────────────────────────────────────────
+    # Right now we load ALL rows in simulation.db.  That's fine for a one-off
+    # check, but in a scheduled job you only want readings from the last window
+    # (e.g. "last 24 hours") so you detect recent drift, not ancient history.
+    #
+    # Your task: if `since` is not None, modify the query to add a WHERE clause:
+    #   WHERE timestamp > :since
+    #
+    # Notes:
+    #   • The timestamp column stores ISO-8601 strings ("2026-05-27T15:05:49…").
+    #     SQLite compares text lexicographically, which works correctly for
+    #     ISO-8601 — "2026-05-28" > "2026-05-27" is True in string order.
+    #   • Use a parameterised query (the :since placeholder) — NEVER put user
+    #     input directly into a SQL string; that's a SQL injection vulnerability.
+    #   • Pass the value via the `params` argument of pd.read_sql_query():
+    #       pd.read_sql_query(query, conn, params={"since": since})
+    #
+    # The --since CLI flag at the bottom already captures the value; you just
+    # need to use it here.
+
+    query = """
+        SELECT
+            machine_type            AS type,
+            air_temperature_kelvin,
+            process_temperature_kelvin,
+            rotational_speed_rpm,
+            torque_nm,
+            tool_wear_minutes,
+            power_kw,
+            temp_diff_kelvin,
+            mechanical_stress
+        FROM sensor_readings
+    """
+    # TODO B: append "WHERE timestamp > :since" when `since` is not None,
+    #          and pass params={"since": since} to pd.read_sql_query()
+
+    df = pd.read_sql_query(query, conn)   # TODO B: add params= here if since is set
+    conn.close()
+
+    return df.dropna()
+
+
+# ── Section 5: Run Evidently report ───────────────────────────────────────────
+def run_drift_report(
+    reference: pd.DataFrame,
+    current: pd.DataFrame,
+    report_path: pathlib.Path,
+) -> dict:
+    """Build the Evidently Report, run it, save HTML, return the results dict.
+
+    HOW DataDriftPreset WORKS
+    ─────────────────────────
+    DataDriftPreset is a convenience wrapper.  It automatically adds one
+    ValueDrift metric per column.  Each ValueDrift metric runs the most
+    appropriate statistical test for the column type:
+      • float / int columns  → Kolmogorov-Smirnov test
+      • string / category    → chi-squared test
+
+    HOW DriftedColumnsCount WORKS
+    ─────────────────────────────
+    After all the per-column ValueDrift tests run, DriftedColumnsCount
+    counts how many columns had p_value < threshold (default 0.05) and
+    returns {"count": N, "share": N/total}.
+
+    We use the "share" value to compare against DRIFT_THRESHOLD in main().
+
+    SNAPSHOT vs REPORT (Evidently 0.7.x)
+    ─────────────────────────────────────
+    In this version, report.run() RETURNS a Snapshot object instead of
+    modifying report in place.  All result-access methods are on the snapshot:
+      snapshot.save_html()  → save the interactive HTML dashboard
+      snapshot.dict()       → get raw results as a Python dict for parsing
+      snapshot.json()       → same but as a JSON string
+    """
+    # TODO C (Stretch — 20 min):  Add DataSummaryPreset alongside DataDriftPreset
+    # ─────────────────────────────────────────────────────────────────────────────
+    # DataSummaryPreset adds data-quality checks to the same HTML report:
+    #   • missing value counts per column
+    #   • value range violations (are rpm values suddenly negative?)
+    #   • column-level statistics (min, max, mean, std)
+    #
+    # Import: from evidently.presets import DataSummaryPreset
+    # Add it to the metrics list: Report(metrics=[DataDriftPreset(), DataSummaryPreset(), DriftedColumnsCount()])
+
+    report = Report(metrics=[
+        DataDriftPreset(),       # per-column drift tests → drives the HTML histograms
+        DriftedColumnsCount(),   # aggregate: N drifted / M total → drives the verdict
+    ])
+
+    # report.run() executes all the statistical tests and returns a Snapshot.
+    # Evidently automatically picks KS for numeric columns, chi-sq for categorical.
+    snapshot = report.run(reference_data=reference, current_data=current)
+
+    # Save the interactive HTML dashboard to disk.
+    # Open this in a browser — you get side-by-side histograms for every feature,
+    # colour-coded by whether drift was detected.
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.save_html(str(report_path))
+
+    # Return the results dict for programmatic parsing in extract_drift_summary().
+    return snapshot.dict()
+
+
+# ── Section 6: Parse results ───────────────────────────────────────────────────
+def extract_drift_summary(result: dict) -> tuple[float, int, int]:
+    """Pull (drift_share, drifted_count, total_count) out of the results dict.
+
+    The results dict has this structure:
+      {
+        "metrics": [
+          {
+            "metric_name": "DriftedColumnsCount(drift_share=0.5)",
+            "value": {"count": 3.0, "share": 0.3333}
+          },
+          {
+            "metric_name": "ValueDrift(column=torque_nm, …)",
+            "value": 0.042          # the p-value
+          },
+          ...
+        ]
+      }
+
+    We search for the DriftedColumnsCount entry and extract its "share" field.
+    The share is the fraction of features where p_value < 0.05 (Evidently default).
+    """
+    for metric in result["metrics"]:
+        if "DriftedColumnsCount" in metric["metric_name"]:
+            share  = float(metric["value"]["share"])
+            count  = int(metric["value"]["count"])
+            # Back-calculate total feature count from share and count.
+            # Avoid ZeroDivisionError: if nothing drifted, share == 0.
+            total = round(count / share) if share > 0 else len(FEATURES)
+            return share, count, total
+
+    # Fallback — should never happen with the Report setup above.
+    return 0.0, 0, len(FEATURES)
+
+
+def print_per_column_results(result: dict) -> None:
+    """Print a compact table showing the drift verdict for each feature.
+
+    Each row shows the feature name, the statistical test used, the metric value,
+    and whether drift was detected.  This is a quick scan before you open the
+    full HTML report.
+
+    WHY 'metric value' and not always 'p-value'?
+    Evidently automatically picks the best test based on sample size:
+      Small samples (< ~1000) : KS test or chi-squared  (output: p-value; drift if < 0.05)
+      Large samples            : Wasserstein distance    (output: distance; drift if > 0.1)
+                                 Jensen-Shannon distance (output: distance; drift if > 0.1)
+    The threshold shown next to each row is the one Evidently used internally.
+    """
+    print(f"\n  {'Feature':<28} {'Test':<30} {'Value':>10}  {'Thresh':>7}  Drift?")
+    print("  " + "-" * 78)
+
+    for metric in result["metrics"]:
+        # Skip the summary metric -- we only want per-column ValueDrift entries.
+        if not metric["metric_name"].startswith("ValueDrift"):
+            continue
+
+        cfg     = metric["config"]
+        col     = cfg.get("column", "?")
+        method  = cfg.get("method", "?")
+        val     = float(metric["value"])    # distance or p-value depending on method
+        thresh  = float(cfg.get("threshold", 0.05))
+
+        # Determine drift direction: p-value tests drift when val < thresh;
+        # distance-based tests drift when val > thresh.
+        is_distance = "distance" in method.lower()
+        drifted = (val > thresh) if is_distance else (val < thresh)
+        label   = "YES !" if drifted else "no"
+
+        print(f"  {col:<28} {method:<30} {val:>10.4f}  {thresh:>7.2f}  {label}")
+
+    print()
+
+
+# ── Section 7: CLI entrypoint ──────────────────────────────────────────────────
+def main() -> None:
+    """Parse CLI flags, run the four stages, print verdict, exit 0/1."""
+    parser = argparse.ArgumentParser(
+        description="Compare live sensor distributions to the training baseline (Evidently AI).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Check all simulation data against the training baseline:
+  python scripts/detect_drift.py
+
+  # Check only readings after a timestamp (requires TODO B to be implemented):
+  python scripts/detect_drift.py --since "2026-05-28T00:00:00"
+
+  # Override the drift threshold at runtime:
+  python scripts/detect_drift.py --threshold 0.2
+
+  # Write the HTML report to a custom path:
+  python scripts/detect_drift.py --report reports/drift_morning.html
+        """,
+    )
+    parser.add_argument(
+        "--csv", default=str(DATA_CSV),
+        help="Path to the training CSV (reference data). Default: data/ai4i2020.csv",
+    )
+    parser.add_argument(
+        "--db", default=str(SIMULATION_DB),
+        help="Path to simulation.db (current data). Default: simulation.db",
+    )
+    parser.add_argument(
+        "--since", default=None,
+        help="ISO-8601 timestamp — only include readings after this time (requires TODO B).",
+    )
+    parser.add_argument(
+        "--threshold", type=float, default=DRIFT_THRESHOLD,
+        help=f"Drift-share threshold that triggers a FAIL verdict (default: {DRIFT_THRESHOLD}).",
+    )
+    parser.add_argument(
+        "--report", default=str(REPORT_DIR / "drift_report.html"),
+        help="Output path for the Evidently HTML report.",
+    )
+    args = parser.parse_args()
+
+    # ── Stage 1: Load data ────────────────────────────────────────────────────
+    print("-" * 72)
+    print("  Predictive Maintenance  - Drift Detection")
+    print("-" * 72)
+
+    print(f"\n[1/4] Reference data  : {args.csv}")
+    reference = load_reference_data(pathlib.Path(args.csv))
+    print(f"      Loaded {len(reference):,} rows  |  features: {list(reference.columns)}")
+
+    since_label = f"since {args.since}" if args.since else "all rows"
+    print(f"\n[2/4] Current data    : {args.db}  ({since_label})")
+    current = load_current_data(pathlib.Path(args.db), since=args.since)
+    print(f"      Loaded {len(current):,} rows")
+
+    # Warn if the current window is too small for reliable statistics.
+    # KS test power drops sharply below ~30 samples per group.
+    if len(current) < 30:
+        print(
+            f"\n  WARNING: only {len(current)} current rows — statistical tests may be unreliable.\n"
+            f"  Run more simulations first:  python src/sensor_simulator.py --n 200\n"
+        )
+
+    # ── Stage 2: Run Evidently ────────────────────────────────────────────────
+    print(f"\n[3/4] Running Evidently...")
+    result = run_drift_report(reference, current, pathlib.Path(args.report))
+    print(f"      HTML report saved -> {args.report}")
+
+    # ── Stage 3: Print per-column table ───────────────────────────────────────
+    print_per_column_results(result)
+
+    # ── Stage 4: Verdict ──────────────────────────────────────────────────────
+    drift_share, drifted_count, total_count = extract_drift_summary(result)
+
+    print(f"[4/4] Verdict")
+    print(f"      Threshold  : {args.threshold:.0%} of features must drift to trigger alert")
+    print(f"      Detected   : {drifted_count}/{total_count} features drifted ({drift_share:.0%})")
+
+    if drift_share >= args.threshold:
+        # Non-zero exit code signals FAIL to the shell and to any CI/CD pipeline.
+        # A GitHub Actions step that calls this script will fail the workflow,
+        # which you can wire to trigger automatic retraining (see retrain.yml).
+        print(f"\n  *** DRIFT DETECTED - {drifted_count} feature(s) shifted significantly ***")
+        print(f"  Next steps:")
+        print(f"    1. Open the HTML report and check which features changed.")
+        print(f"    2. Run: python scripts/export_simulation_to_csv.py --append")
+        print(f"    3. Run: dvc repro   (retrains the model on the expanded dataset)")
+        sys.exit(1)
+    else:
+        print(f"\n  PASS - distribution looks stable. No retraining triggered.")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
