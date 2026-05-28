@@ -79,6 +79,13 @@ Four choices that shaped this script — and why they were made this way:
      one. --dry-run shows the failure rate, per-type flag counts, and a row
      preview so you can sanity-check the export before it touches the file.
 
+  5. --purge deletes exported rows from simulation.db after a successful write.
+     Without it, simulation.db grows unboundedly and every export re-reads the
+     same old rows unless you remember to use --since. With it, the DB stays
+     small and the CSV becomes the single durable record. Purge happens by
+     exact row ID (not timestamp) so a simulator run that writes new rows
+     during export is never accidentally deleted.
+
 Retraining loop
 ---------------
   1. python scripts/export_simulation_to_csv.py   ← this script
@@ -101,6 +108,9 @@ Usage
 
   # Dry run — show counts and column preview, write nothing:
   python scripts/export_simulation_to_csv.py --dry-run
+
+  # Export and delete the exported rows from simulation.db (keeps DB small):
+  python scripts/export_simulation_to_csv.py --purge
 """
 
 import sqlite3
@@ -231,6 +241,41 @@ def load_simulation_rows(db_path: Path, since: str | None) -> pd.DataFrame:
     return df
 
 
+def purge_exported_rows(db_path: Path, row_ids: list[int]) -> int:
+    """Delete exported rows from simulation.db by their exact IDs.
+
+    WHY by ID and not by timestamp?
+    Deleting by ID means we remove exactly the rows that were loaded and
+    written to CSV — nothing more.  If the simulator happens to write new
+    rows while this script is running, those rows have higher IDs and are
+    never touched.  A timestamp-based DELETE could catch those new rows if
+    the clock ticks between load and delete.
+
+    WHY batch in chunks of 500?
+    SQLite's default SQLITE_MAX_VARIABLE_NUMBER limit is 999.  Passing more
+    than 999 values in a single IN clause raises an OperationalError.  500
+    is a safe batch size with headroom for other bound variables.
+    """
+    if not row_ids:
+        return 0
+
+    conn    = sqlite3.connect(db_path)
+    deleted = 0
+
+    # Delete in batches so we never exceed SQLite's IN-clause variable limit.
+    for i in range(0, len(row_ids), 500):
+        chunk        = row_ids[i : i + 500]               # slice one batch of IDs
+        placeholders = ",".join("?" * len(chunk))          # "?,?,?..." for parameterised query
+        cursor       = conn.execute(
+            f"DELETE FROM sensor_readings WHERE id IN ({placeholders})", chunk
+        )
+        deleted += cursor.rowcount                         # accumulate rows actually deleted
+
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def convert_to_csv_format(sim_df: pd.DataFrame, starting_udi: int) -> pd.DataFrame:
     """Convert simulation DataFrame to original CSV column layout.
 
@@ -300,12 +345,23 @@ def convert_to_csv_format(sim_df: pd.DataFrame, starting_udi: int) -> pd.DataFra
     default=False,
     help="Preview counts and first few rows; do not write any files.",
 )
+@click.option(
+    "--purge",
+    is_flag=True,
+    default=False,
+    help=(
+        "After a successful CSV write, delete the exported rows from simulation.db. "
+        "Keeps the DB small. The CSV becomes the single durable record. "
+        "Ignored when --dry-run is set."
+    ),
+)
 def main(
     output_path: str,
     db_path: str,
     since: str | None,
     append: bool,
     dry_run: bool,
+    purge: bool,
 ) -> None:
     """Convert simulation.db readings to the AI4I CSV format for DVC retraining.
 
@@ -358,12 +414,14 @@ def main(
     click.echo(f"  PWF flags set       : {pwf_count:,}  ({pwf_count/len(export_df):.1%})")
     click.echo(f"  OSF flags set       : {osf_count:,}  ({osf_count/len(export_df):.1%})")
     click.echo(f"  TWF flags set       : {twf_count:,}  ({twf_count/len(export_df):.1%})")
-    click.echo(f"  UDI range           : {starting_udi} → {starting_udi + len(export_df) - 1}")
+    click.echo(f"  UDI range           : {starting_udi} -> {starting_udi + len(export_df) - 1}")
     click.echo(f"\nFirst 3 export rows:")
     click.echo(export_df.head(3).to_string(index=False))
 
     if dry_run:
         click.echo("\n[DRY RUN] No files written.")
+        if purge:
+            click.echo(f"[DRY RUN] --purge would delete {len(sim_df):,} rows from simulation.db after a real write.")
         return
 
     # ── Write ──────────────────────────────────────────────────────────────────
@@ -377,6 +435,14 @@ def main(
         output.parent.mkdir(parents=True, exist_ok=True)
         export_df.to_csv(output, index=False)
         click.echo(f"\nWrote {len(export_df):,} rows → {output}")
+
+    # ── Purge ──────────────────────────────────────────────────────────────────
+    # Only runs after a confirmed write — never on dry-run.
+    # Deletes by the exact IDs loaded earlier, so rows written by a concurrent
+    # simulator run during export are never accidentally removed.
+    if purge:
+        deleted = purge_exported_rows(db, sim_df["id"].tolist())
+        click.echo(f"  Purged {deleted:,} rows from simulation.db")
 
     click.echo("\nNext steps:")
     click.echo("  dvc add data/ai4i2020.csv")
