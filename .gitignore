@@ -42,6 +42,9 @@ metrics.txt
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Evidently drift reports (generated artefacts — overwritten on each run)
+reports/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

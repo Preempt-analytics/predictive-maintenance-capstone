@@ -36,7 +36,7 @@ KEY VOCABULARY (read once, then the code will make sense)
   Chi-squared test  : used for categorical features (machine type L/M/H).
                       Tests whether the proportions of categories have changed.
   DRIFT_THRESHOLD   : the fraction of drifted features above which we raise an
-                      alert.  You set this — see TODO A below.
+                      alert.  Default is 0.25 — override with --threshold.
 
 EVIDENTLY API (version 0.7.x) — what is different from older tutorials
 ──────────────────────────────────────────────────────────────────────────
@@ -62,11 +62,14 @@ import pandas as pd       # tabular data; Evidently expects DataFrames
 # Report      : the container that holds one or more metric objects.
 # DataDriftPreset : shorthand that adds per-column drift metrics for every feature.
 #                   Produces the interactive histograms you see in the HTML report.
+# DataSummaryPreset : adds data-quality checks and column-level stats to the same report.
 # DriftedColumnsCount : a single aggregate metric: "N of M features drifted".
 #                       We use this to extract a numeric drift_share for the verdict.
 from evidently import Report
 from evidently.presets import DataDriftPreset
+from evidently.presets import DataSummaryPreset
 from evidently.metrics import DriftedColumnsCount
+
 
 # Our own project modules — feature definitions shared between training and inference.
 # sys.path trick: lets Python find src/ without installing the package.
@@ -90,31 +93,11 @@ REPORT_DIR    = _ROOT / "reports"                         # where the HTML repor
 # ai4i2020_baseline.csv is locked at project start and never changes, so drift
 # is always measured against the same original ground truth.
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TODO A  (Easy — 5 min):  Choose your drift threshold
-# ─────────────────────────────────────────────────────────────────────────────
-# DRIFT_THRESHOLD is the fraction of features that must drift before we raise
-# a FAIL verdict.  We have 9 features, so:
-#   0.11 ≈ 1/9  → alert if even ONE feature shifts  (very sensitive, noisy)
-#   0.33 ≈ 3/9  → alert if a third of features shift  (common starting point)
-#   0.50 = 5/9  → alert only if a majority of features shift  (permissive)
-#
-# Your task:
-#   1. Decide what threshold makes sense for a predictive maintenance system.
-#      Hint: missing a real drift event is more costly than a false alarm here.
-#   2. Replace the placeholder value below with your chosen number.
-#   3. Add a one-line comment explaining WHY you chose it.
-#      (Example: "# 1/9 — any single feature drift is worth investigating in
-#                           a safety-critical context")
-#
-# Run with --threshold to override at runtime without editing this file.
-
-DRIFT_THRESHOLD = 0.25   # TODO A: is this the right value? change it and explain why.
-
-# We argue for 0.25 since not catching drift / error can be much more costly in terms of downtime and repairs 
-# and safety than a false alarm.  Even if only 2 of the 9 features drift, it's worth investigating and
-# potentially retraining before the model degrades too much.  In a safety-critical context, 
-# you want to err on the side of caution and catch drift early, even if it means more frequent alerts.
+# 0.25 ≈ 2/9 — alert if two or more features drift. Missing real drift is more costly
+# than a false alarm in a safety-critical context (unplanned downtime, failed components),
+# so we err on the side of sensitivity without triggering on a single noisy feature.
+# Override at runtime with --threshold without editing this file.
+DRIFT_THRESHOLD = 0.25
 
 
 # ── Section 3: Load reference data ────────────────────────────────────────────
@@ -154,40 +137,13 @@ def load_current_data(db_path: pathlib.Path, since: str | None = None) -> pd.Dat
     The SELECT alias renames it in one step, so the returned DataFrame matches
     the reference DataFrame column for column.
     """
+    # --since filters to a specific time window, useful when simulation.db has
+    # accumulated multiple runs and you only want to check the most recent batch.
+    # Run order when using --purge: simulate → detect_drift → export --purge.
+    # ISO-8601 strings compare correctly in SQLite lexicographic order.
     conn = sqlite3.connect(db_path)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # TODO B  (Medium — 15 min):  Add a timestamp filter on the query
-    # ─────────────────────────────────────────────────────────────────────────
-    # IMPORTANT — run order with --purge:
-    #   detect_drift.py must run BEFORE export_simulation_to_csv.py --purge.
-    #   Purging empties simulation.db, so if you purge first there is nothing
-    #   left to compare against the training baseline.
-    #   Correct order: simulate → detect_drift → export --purge
-    #
-    # Why --since is still useful even with --purge:
-    #   If you run the simulator several times before exporting, simulation.db
-    #   accumulates rows from multiple runs.  --since lets you detect drift for
-    #   just the most recent run ("what changed in the last hour?") rather than
-    #   comparing all accumulated rows at once and averaging out the signal.
-    #
-    # Your task: if `since` is not None, modify the query to add a WHERE clause:
-    #   WHERE timestamp > :since
-    #
-    # Notes:
-    #   • The timestamp column stores ISO-8601 strings ("2026-05-27T15:05:49").
-    #     SQLite compares text lexicographically, which works correctly for
-    
-    #     ISO-8601 — "2026-05-28" > "2026-05-27" is True in string order.
-    #   • Use a parameterised query (the :since placeholder) — NEVER put user
-    #     input directly into a SQL string; that's a SQL injection vulnerability.
-    #   • Pass the value via the `params` argument of pd.read_sql_query():
-    #       pd.read_sql_query(query, conn, params={"since": since})
-    #
-    # The --since CLI flag at the bottom already captures the value; you just
-    # need to use it here.
-
-    query = """
+    base_query = """
         SELECT
             machine_type            AS type,
             air_temperature_kelvin,
@@ -200,10 +156,12 @@ def load_current_data(db_path: pathlib.Path, since: str | None = None) -> pd.Dat
             mechanical_stress
         FROM sensor_readings
     """
-    # TODO B: append "WHERE timestamp > :since" when `since` is not None,
-    #          and pass params={"since": since} to pd.read_sql_query()
 
-    df = pd.read_sql_query(query, conn)   # TODO B: add params= here if since is set
+    if since is not None:
+        query  = base_query + " WHERE timestamp > :since"
+        df = pd.read_sql_query(query, conn, params={"since": since})
+    else:
+        df = pd.read_sql_query(base_query, conn)
     conn.close()
 
     return df.dropna()
@@ -241,18 +199,9 @@ def run_drift_report(
       snapshot.dict()       → get raw results as a Python dict for parsing
       snapshot.json()       → same but as a JSON string
     """
-    # TODO C (Stretch — 20 min):  Add DataSummaryPreset alongside DataDriftPreset
-    # ─────────────────────────────────────────────────────────────────────────────
-    # DataSummaryPreset adds data-quality checks to the same HTML report:
-    #   • missing value counts per column
-    #   • value range violations (are rpm values suddenly negative?)
-    #   • column-level statistics (min, max, mean, std)
-    #
-    # Import: from evidently.presets import DataSummaryPreset
-    # Add it to the metrics list: Report(metrics=[DataDriftPreset(), DataSummaryPreset(), DriftedColumnsCount()])
-
     report = Report(metrics=[
         DataDriftPreset(),       # per-column drift tests → drives the HTML histograms
+        DataSummaryPreset(),     # data-quality checks and column-level stats
         DriftedColumnsCount(),   # aggregate: N drifted / M total → drives the verdict
     ])
 
@@ -355,7 +304,7 @@ Examples:
   # Check all simulation data against the training baseline:
   python scripts/detect_drift.py
 
-  # Check only readings after a timestamp (requires TODO B to be implemented):
+  # Check only readings after a specific timestamp:
   python scripts/detect_drift.py --since "2026-05-28T00:00:00"
 
   # Override the drift threshold at runtime:
@@ -375,7 +324,7 @@ Examples:
     )
     parser.add_argument(
         "--since", default=None,
-        help="ISO-8601 timestamp — only include readings after this time (requires TODO B).",
+        help="ISO-8601 timestamp — only include readings after this time. E.g. '2026-05-28T00:00:00'.",
     )
     parser.add_argument(
         "--threshold", type=float, default=DRIFT_THRESHOLD,
