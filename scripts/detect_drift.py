@@ -77,10 +77,18 @@ from feature_transformation import FEATURES, engineer_features   # 9 feature nam
 # ── Section 2: Configuration constants ────────────────────────────────────────
 # Path defaults — all relative to the project root so the script works from any
 # working directory (as long as you run it from the repo root or use --csv / --db).
-_ROOT        = pathlib.Path(__file__).parent.parent
-DATA_CSV     = _ROOT / "data" / "ai4i2020.csv"     # reference: original training data
-SIMULATION_DB = _ROOT / "simulation.db"            # current: live simulation readings
-REPORT_DIR   = _ROOT / "reports"                   # where the HTML report is saved
+_ROOT         = pathlib.Path(__file__).parent.parent
+DATA_CSV      = _ROOT / "data" / "ai4i2020_baseline.csv"  # frozen original 10k rows — never appended to
+SIMULATION_DB = _ROOT / "simulation.db"                   # current: live simulation readings
+REPORT_DIR    = _ROOT / "reports"                         # where the HTML report is saved
+
+# WHY a frozen baseline and not the growing ai4i2020.csv?
+# Every time export_simulation_to_csv.py runs, new rows enter ai4i2020.csv.
+# If we used that file as the drift reference, the baseline would shift toward
+# the current distribution after every retrain — making drift look smaller than
+# it actually is over time (the ratchet effect).
+# ai4i2020_baseline.csv is locked at project start and never changes, so drift
+# is always measured against the same original ground truth.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TODO A  (Easy — 5 min):  Choose your drift threshold
@@ -169,6 +177,7 @@ def load_current_data(db_path: pathlib.Path, since: str | None = None) -> pd.Dat
     # Notes:
     #   • The timestamp column stores ISO-8601 strings ("2026-05-27T15:05:49").
     #     SQLite compares text lexicographically, which works correctly for
+    
     #     ISO-8601 — "2026-05-28" > "2026-05-27" is True in string order.
     #   • Use a parameterised query (the :since placeholder) — NEVER put user
     #     input directly into a SQL string; that's a SQL injection vulnerability.
@@ -358,7 +367,7 @@ Examples:
     )
     parser.add_argument(
         "--csv", default=str(DATA_CSV),
-        help="Path to the training CSV (reference data). Default: data/ai4i2020.csv",
+        help="Frozen reference CSV. Default: data/ai4i2020_baseline.csv (never use ai4i2020.csv here — it grows with each export and undermines long-term drift tracking).",
     )
     parser.add_argument(
         "--db", default=str(SIMULATION_DB),
