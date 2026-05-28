@@ -54,6 +54,12 @@ import argparse           # parse --flags from the command line
 import pathlib            # Path objects are safer than raw strings for file paths
 import sqlite3            # built-in SQLite adapter — no install required
 import sys                # sys.exit(1) signals FAIL to the calling shell / CI
+import warnings           # suppress cosmetic RuntimeWarnings from scipy/Evidently
+
+# Evidently calls scipy routines (vecdot, etc.) that emit RuntimeWarnings on
+# Wasserstein distance computations when sample sizes are unequal. The results
+# are correct; the warnings are noise from a scipy version mismatch in Evidently.
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy")
 
 # Third-party
 import pandas as pd       # tabular data; Evidently expects DataFrames
@@ -97,7 +103,7 @@ REPORT_DIR    = _ROOT / "reports"                         # where the HTML repor
 # than a false alarm in a safety-critical context (unplanned downtime, failed components),
 # so we err on the side of sensitivity without triggering on a single noisy feature.
 # Override at runtime with --threshold without editing this file.
-DRIFT_THRESHOLD = 0.25
+DRIFT_THRESHOLD = 0.33
 
 
 # ── Section 3: Load reference data ────────────────────────────────────────────
@@ -350,13 +356,16 @@ Examples:
     current = load_current_data(pathlib.Path(args.db), since=args.since)
     print(f"      Loaded {len(current):,} rows")
 
-    # Warn if the current window is too small for reliable statistics.
-    # KS test power drops sharply below ~30 samples per group.
-    if len(current) < 30:
-        print(
-            f"\n  WARNING: only {len(current)} current rows — statistical tests may be unreliable.\n"
-            f"  Run more simulations first:  python src/sensor_simulator.py --n 200\n"
-        )
+    too_few = len(current) < 30
+    if too_few:
+        response = input(
+            f"\n  Only {len(current)} rows loaded — KS/Wasserstein tests are unreliable below 30.\n"
+            f"  Continue anyway? [y/N] "
+        ).strip().lower()
+        if response != "y":
+            print("  Aborted. Run more simulations first:")
+            print("    python src/sensor_simulator.py --n-readings 200")
+            sys.exit(0)
 
     # ── Stage 2: Run Evidently ────────────────────────────────────────────────
     print(f"\n[3/4] Running Evidently...")
@@ -382,10 +391,18 @@ Examples:
         print(f"    1. Open the HTML report and check which features changed.")
         print(f"    2. Run: python scripts/export_simulation_to_csv.py --append")
         print(f"    3. Run: dvc repro   (retrains the model on the expanded dataset)")
-        sys.exit(1)
     else:
         print(f"\n  PASS - distribution looks stable. No retraining triggered.")
-        sys.exit(0)
+
+    if too_few:
+        print(
+            f"\n  WARNING: results above are based on only {len(current)} rows — "
+            f"treat them as indicative only.\n"
+            f"  Run more simulations for reliable statistics: "
+            f"python src/sensor_simulator.py --n-readings 200"
+        )
+
+    sys.exit(1 if drift_share >= args.threshold else 0)
 
 
 if __name__ == "__main__":

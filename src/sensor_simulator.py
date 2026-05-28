@@ -107,13 +107,24 @@ load_dotenv()
 MACHINE_TYPES        = ["L", "M", "H"]
 MACHINE_TYPE_WEIGHTS = [0.60, 0.30, 0.10]   # proportions from the original dataset
 
-# Each tuple is (mean, std) for a Gaussian distribution
-AIR_TEMP_KELVIN            = (300.0, 2.0)
-PROCESS_TEMP_OFFSET_KELVIN = (10.0,  1.0)   # process temp = air temp + this offset
-ROTATIONAL_SPEED_RPM       = (1538.0, 179.0)
-TORQUE_NM                  = (39.9,   9.97)
+# Temperature constants — fitted from ai4i2020.csv describe()
+# Process temperature is NOT sampled independently from air temperature.
+# In the real dataset they correlate at 0.876 — both reflect the same factory
+# thermal environment.  Sampling them independently inflates process_temp
+# variance by 51% (simulator std 2.24K vs training 1.48K), causing false drift
+# alerts when comparing simulation to training data.  A bivariate normal
+# reproduces both marginal distributions and the correct joint covariance.
+AIR_TEMP_MEAN     = 300.0       # mean air temperature (K)
+PROCESS_TEMP_MEAN = 310.0       # mean process temperature (K)
+TEMP_COV_MATRIX   = [           # 2×2 covariance: [[var_air, cov], [cov, var_proc]]
+    [4.000, 2.601],             # var_air = 2.0² = 4.0;  cov = ρ×σ_air×σ_proc = 0.876×2.0×1.484 ≈ 2.601
+    [2.601, 2.202],             # cov = 2.601;  var_proc = 1.484² ≈ 2.202
+]
 
-TOOL_WEAR_MAX_MINUTES  = 240   # maximum wear before tool replacement (from EDA)
+ROTATIONAL_SPEED_RPM = (1538.0, 179.0)
+TORQUE_NM            = (39.9,   9.97)
+
+TOOL_WEAR_MAX_MINUTES  = 253   # maximum wear before tool replacement (training data max; was 240)
 TOOL_WEAR_STEP_MINUTES = 2     # wear added per reading, per machine
 
 DEFAULT_N_MACHINES = 5         # spread readings across multiple machines in parallel
@@ -380,18 +391,24 @@ def generate_raw_reading(tool_wear_minutes: float, inject_failure: bool) -> dict
         COLUMN_RENAME in feature_transformation.py exactly.
     """
     machine_type = random.choices(MACHINE_TYPES, weights=MACHINE_TYPE_WEIGHTS)[0]
-    air_temp     = np.random.normal(*AIR_TEMP_KELVIN)   # *tuple unpacks (mean, std) as separate args
 
     if inject_failure:
-        # HDF condition: narrow the temperature gap below the 8.6 K failure threshold
-        process_temp = air_temp + np.random.normal(FAILURE_TEMP_OFFSET_KELVIN, 0.5)
+        # For failure injection, air temp is sampled normally; process temp is
+        # then shifted downward to simulate HDF (Heat Dissipation Failure):
+        # the gap between process and air temp drops below the 8.6 K threshold.
+        air_temp     = np.random.normal(AIR_TEMP_MEAN, 2.0)
+        process_temp = air_temp + np.random.normal(FAILURE_TEMP_OFFSET_KELVIN, 0.5)  # narrowed gap
         # PWF + OSF: lower rpm and raise torque simultaneously
         torque = max(0.0, np.random.normal(TORQUE_NM[0] + FAILURE_TORQUE_ADD_NM, TORQUE_NM[1] * 0.5))
         rpm    = max(500.0, np.random.normal(ROTATIONAL_SPEED_RPM[0] + FAILURE_RPM_SHIFT, ROTATIONAL_SPEED_RPM[1] * 0.5))
     else:
-        process_temp = air_temp + np.random.normal(*PROCESS_TEMP_OFFSET_KELVIN)
-        torque       = max(0.0, np.random.normal(*TORQUE_NM))
-        rpm          = max(500.0, np.random.normal(*ROTATIONAL_SPEED_RPM))
+        # Joint sampling: preserves the 0.876 correlation from the training data.
+        # Independent sampling would give process_temp std = 2.24K vs the true 1.48K.
+        air_temp, process_temp = np.random.multivariate_normal(
+            [AIR_TEMP_MEAN, PROCESS_TEMP_MEAN], TEMP_COV_MATRIX
+        )
+        torque = max(0.0, np.random.normal(*TORQUE_NM))
+        rpm    = max(500.0, np.random.normal(*ROTATIONAL_SPEED_RPM))
 
     return {
         "Type":                    machine_type,
