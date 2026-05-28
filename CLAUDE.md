@@ -47,7 +47,43 @@ Before any change that touches an Integration Contract (listed below), state:
   2. Which other files depend on that contract
   3. Whether those files are being updated in the same change
 
-### Standing Protocol — Commit & Push After Every Change
+### Standing Protocol — Educational Comments
+
+Every file written or edited must include two layers of comments.
+
+**Layer 1 — Section header (one per logical block)**
+Write a short prose paragraph above each section explaining WHY this block exists:
+what problem it solves, what the reader needs to know before reading the code,
+and any non-obvious constraint or decision. Lead with the most important sentence
+(Redish: front-load). Keep it to 3–5 lines maximum — if you need more, the section
+is too large.
+
+```python
+# ── Load reference data ───────────────────────────────────────────────────────
+# We load the training CSV here, not simulation.db, because the model was trained
+# on this distribution.  Evidently needs both sides to come from the same feature
+# space — if we compared raw sensor columns to engineered features, every column
+# would show drift regardless of whether anything actually changed.
+```
+
+**Layer 2 — Inline comment (one per meaningful line)**
+Write a short phrase to the right of each non-obvious line explaining what it does
+or why. Use plain words — never jargon the reader would have to look up (Krug:
+don't make me think). Aim for 5–10 words. Skip lines where the code reads like
+English already (`conn.close()`, `return df`).
+
+```python
+df = pd.read_csv(csv_path)       # load the 10k-row AI4I training dataset
+df = engineer_features(df)       # rename columns + compute power_kw, temp_diff, stress
+df = df[FEATURES].dropna()       # keep only the 9 model inputs; drop rows with gaps
+```
+
+**What NOT to comment:**
+- Lines whose variable names already explain them (`model.fit(X_train, y_train)`)
+- Restatements of the code in plain English that add no new information
+- Implementation details that belong in the commit message, not the source file
+
+**Standing Protocol — Commit & Push After Every Change
 Every completed change — however small — must be committed and pushed immediately.
 Do not batch changes across multiple edits before committing.
 
