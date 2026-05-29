@@ -3,11 +3,11 @@
 # WHY THIS SCRIPT EXISTS
 # After dvc repro finishes, a new model version sits in the MLflow registry but
 # carries no @production alias. The API and simulator both load models:/{name}@production,
-# so nothing changes in production until someone (or this script) moves the alias.
+# so nothing changes in production until someone (or this script automatically) moves the alias.
 #
 # TWO MODES
 #
-#   Manual mode  (default, no --auto flag)
+#   Manual mode  (no --auto flag)
 #     Reports what WOULD happen: shows new vs current f1_test, whether the new
 #     version meets the threshold, and whether it would be promoted.
 #     The alias is NOT moved. A developer reviews the report and promotes manually.
@@ -161,7 +161,8 @@ def main(model_name: str, min_f1: float | None, auto: bool) -> None:
 
     if prod_version:
         prod_f1 = get_metric_for_version(client, model_name, prod_version, "f1_test")
-        print(f"  Current @production : version {prod_version}  f1_test={prod_f1:.4f if prod_f1 is not None else 'N/A'}")
+        prod_f1_str = f"{prod_f1:.4f}" if prod_f1 is not None else "N/A"   # format spec cannot be conditional inline
+        print(f"  Current @production : version {prod_version}  f1_test={prod_f1_str}")
     else:
         prod_f1 = None
         print("  Current @production : (none — this will be the first promotion)")
