@@ -774,17 +774,18 @@ def main(
     print(f"\nDone — {n_readings} readings stored in {DB_PATH}.")
 
     # ── Auto drift detection ───────────────────────────────────────────────────
-    # --detect-drift and --export-on-drift are only safe in normal mode.
-    # Gradual-drift and sudden-spike inject failures by design, so they will
-    # always show distribution shift — running detection would be misleading
-    # and auto-exporting that data would corrupt the training set.
+    # Drift detection runs for all modes when --detect-drift or --export-on-drift
+    # is set. Non-normal modes deliberately shift the failure distribution, so
+    # drift is expected — that's the point. We note this so the results are not
+    # surprising, but we don't block the pipeline: testing the full retrain loop
+    # with an injected spike is a valid and useful workflow.
     run_detection = detect_drift or export_on_drift
     if run_detection and mode != "normal":
         print(
-            f"\nWARNING: --detect-drift skipped — mode '{mode}' injects failures by design "
-            "and will always show drift. Run with --mode normal for meaningful drift detection."
+            f"\n  NOTE: mode '{mode}' injects failures by design — drift detection "
+            "will likely trigger. This is expected when stress-testing the retrain pipeline."
         )
-    elif run_detection:
+    if run_detection:
         detect_script = Path(__file__).parent.parent / "scripts" / "detect_drift.py"
         cmd = [sys.executable, str(detect_script)]
         if export_on_drift:
