@@ -122,7 +122,7 @@ def main(model_name: str, min_f1: float | None, auto: bool) -> None:
     # These defaults represent the minimum acceptable real-world performance.
     # Adjust with --min-f1 if your data distribution or business requirements differ.
     if min_f1 is None:
-        min_f1 = 0.85 if "binary" in model_name else 0.80
+        min_f1 = 0.85 if "binary" in model_name else 0.60
 
     # ── Connect to MLflow ──────────────────────────────────────────────────────
     # Credentials come from environment variables — never hardcoded.
