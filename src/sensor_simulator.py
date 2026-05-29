@@ -792,8 +792,12 @@ def main(
         print("\n" + "─" * 60)
         print("  Auto drift detection starting...")
         print("─" * 60 + "\n")
-        result = subprocess.run(cmd)           # exit 1 from detect_drift means drift detected
-        sys.exit(result.returncode)            # propagate exit code to the calling shell
+        result = subprocess.run(cmd)
+        # detect_drift.py uses exit 1 to mean "drift detected" — not "I crashed".
+        # Propagating that exit code would make the simulator appear to have failed.
+        # Exit 0 always; only re-raise genuinely unexpected codes (>1 = real errors).
+        if result.returncode > 1:
+            sys.exit(result.returncode)
     else:
         print("Next: run drift detection to check for feature distribution shift.")
         print("  python scripts/detect_drift.py")

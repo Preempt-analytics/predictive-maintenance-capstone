@@ -370,14 +370,23 @@ Examples:
 
     too_few = len(current) < 30
     if too_few:
-        response = input(
-            f"\n  Only {len(current)} rows loaded — KS/Wasserstein tests are unreliable below 30.\n"
-            f"  Continue anyway? [y/N] "
-        ).strip().lower()
-        if response != "y":
-            print("  Aborted. Run more simulations first:")
-            print("    python src/sensor_simulator.py --n-readings 200")
-            sys.exit(0)
+        if sys.stdin.isatty():
+            # Interactive terminal: ask before running statistically weak tests.
+            response = input(
+                f"\n  Only {len(current)} rows loaded — KS/Wasserstein tests are unreliable below 30.\n"
+                f"  Continue anyway? [y/N] "
+            ).strip().lower()
+            if response != "y":
+                print("  Aborted. Run more simulations first:")
+                print("    python src/sensor_simulator.py --n-readings 200")
+                sys.exit(0)
+        else:
+            # Non-interactive context (e.g. called via subprocess from the simulator).
+            # input() would block indefinitely here — warn and continue instead.
+            print(
+                f"\n  WARNING: only {len(current)} rows — statistical tests unreliable below 30. "
+                "Continuing (non-interactive)."
+            )
 
     # ── Stage 2: Run Evidently ────────────────────────────────────────────────
     print(f"\n[3/4] Running Evidently...")
