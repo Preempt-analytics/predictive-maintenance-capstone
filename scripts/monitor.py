@@ -47,7 +47,7 @@
 
 import json                                    # serialise log entries as single-line JSON
 import subprocess
-from datetime import datetime, timezone        # UTC timestamps for log entries
+from datetime import datetime, timezone        # UTC timestamps for monitor_log.jsonl entries
 from pathlib import Path
 
 import schedule    # schedule library — already in requirements.txt
@@ -102,39 +102,25 @@ def check_drift() -> None:
         _append_log(drift_detected=False, retrain_triggered=False)   # record the PASS
         return
 
-    # ── Step 2: Export simulation data ───────────────────────────────────────────
-    # Drift confirmed. export_simulation_to_csv.py does one thing: append rows
-    # from simulation.db to the training CSV and optionally purge exported rows.
-    # The dvc/git orchestration is handled here in Steps 3 and 4 — not delegated
-    # to the export script, which stays focused on its single responsibility.
-    print("  Drift detected. Exporting simulation data...")
+    # ── Step 2: Export, push, and trigger retraining ─────────────────────────
+    # Drift confirmed. export_simulation_to_csv.py owns the full pipeline:
+    #   --purge   : removes exported rows from simulation.db after writing
+    #   --push    : runs dvc add → dvc push to upload the updated CSV to DagsHub
+    #   --retrain : writes a UTC timestamp to retrain.trigger and commits + pushes
+    #
+    # GitHub Actions watches retrain.trigger — a change there fires retrain.yml.
+    # All error handling, commit messaging, and the Actions URL are handled inside
+    # export_simulation_to_csv.py's _push_to_remote() function.
+    print("  Drift detected. Exporting data and triggering retrain...")
     export_result = subprocess.run(
-        ["python", "scripts/export_simulation_to_csv.py", "--purge"],
+        ["python", "scripts/export_simulation_to_csv.py", "--purge", "--push", "--retrain"],
         cwd=ROOT,
     )
 
     if export_result.returncode != 0:
-        print("  ERROR: Export failed. Will retry on next scheduled run.")
+        print("  ERROR: Export/push failed. Will retry on next scheduled run.")
         _append_log(drift_detected=True, retrain_triggered=False)
         return
-
-    # ── Step 3: Update DVC ────────────────────────────────────────────────────
-    # The training CSV has new rows. dvc add recomputes its content hash and
-    # updates the .dvc pointer file. dvc push uploads the new CSV to DagsHub
-    # so GitHub Actions can pull it during the retrain job.
-    print("  Updating DVC pointer and pushing to DagsHub...")
-    subprocess.run(["dvc", "add", "data/ai4i2020.csv"], cwd=ROOT, check=True)
-    subprocess.run(["dvc", "push", "data/ai4i2020.csv"], cwd=ROOT, check=True)
-
-    # ── Step 4: Commit and push to trigger GitHub Actions ────────────────────
-    # retrain.yml watches for changes to retrain.trigger, not ai4i2020.csv.dvc.
-    # Writing the current UTC timestamp gives git a real change to detect —
-    # an empty touch would work too, but the timestamp makes the log readable.
-    print("  Committing retrain trigger and pushing to GitHub...")
-    (ROOT / "retrain.trigger").write_text(datetime.now(timezone.utc).isoformat())
-    subprocess.run(["git", "add", "data/ai4i2020.csv.dvc", "retrain.trigger"], cwd=ROOT, check=True)
-    subprocess.run(["git", "commit", "-m", "auto: drift detected, retraining triggered"], cwd=ROOT, check=True)
-    subprocess.run(["git", "push"], cwd=ROOT, check=True)
 
     print("  Retrain triggered. GitHub Actions will pick this up shortly.")
     _append_log(drift_detected=True, retrain_triggered=True)
