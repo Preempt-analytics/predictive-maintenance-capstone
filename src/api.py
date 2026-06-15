@@ -179,6 +179,7 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     model_name: str | None
     model_version: str | None = None
+    model_f1_score: float | None = None   # f1_test from the MLflow run that produced this version
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -230,15 +231,20 @@ async def lifespan(app: FastAPI):           # FastAPI passes itself in; we don't
         # This is a separate network call, so it gets its own try/except —
         # a failure here shouldn't prevent the model from serving predictions.
         try:
-            mv = mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, "production")
-            resolved_version = mv.version  # e.g. "3"
+            client           = mlflow.MlflowClient()
+            mv               = client.get_model_version_by_alias(MODEL_NAME, "production")
+            resolved_version = mv.version                                    # e.g. "13"
+            run              = client.get_run(mv.run_id)                     # fetch the training run
+            resolved_f1      = run.data.metrics.get("f1_test")              # f1_test logged by modeling_pipeline.py
         except Exception:
             resolved_version = None         # version stays null in responses — not critical
+            resolved_f1      = None
 
         # Write everything into app_state so route handlers can read it.
-        app_state["model"]          = model
-        app_state["model_name"]     = MODEL_NAME
-        app_state["model_version"]  = resolved_version
+        app_state["model"]           = model
+        app_state["model_name"]      = MODEL_NAME
+        app_state["model_version"]   = resolved_version
+        app_state["model_f1_score"]  = resolved_f1
         app_state["model_loaded"]   = True
         app_state["is_multiclass"]  = MODEL_NAME.endswith("-multiclass")  # used in run_prediction below
         print(f"  Model ready: {MODEL_NAME}@production (version {resolved_version})")
@@ -374,6 +380,8 @@ async def health() -> HealthResponse:
         model_loaded=app_state.get("model_loaded", False),         # .get() returns False if key is missing (safer than direct access)
         model_name=app_state.get("model_name"),
         model_version=app_state.get("model_version"),
+        model_f1_score=app_state.get("model_f1_score"),
+
     )
 
 
