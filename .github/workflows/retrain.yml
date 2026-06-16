@@ -83,7 +83,10 @@ jobs:
       # The pipeline trains from ai4i2020.parquet (switched from CSV); the
       # baseline is still CSV and is used by detect_drift.py for comparison.
       - name: Pull training data from DVC remote
-        run: dvc pull
+        run: |
+          dvc pull --verbose                           # show what was fetched / why failures occur
+          echo "--- workspace data/ after pull ---"
+          ls -lh data/                                 # confirm the parquet file actually landed
 
       # Step 6 - Run the training pipeline
       # Only the two XGBoost stages are retrained here — these are the model
