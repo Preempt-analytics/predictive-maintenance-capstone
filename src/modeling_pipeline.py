@@ -537,7 +537,7 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
     df = engineer_features(df)
 
     if config.target_type == "multiclass":
-        failure_cols = ["twf", "hdf", "pwf", "osf", "rnf"]
+        failure_cols = ["twf", "hdf", "pwf", "osf"]          # rnf excluded: never in data (no sensor signature)
         def resolve_label(row):
             active = [c for c in failure_cols if row[c] == 1]
             return FAILURE_TYPE_TO_INT[active[0] if active else "none"]

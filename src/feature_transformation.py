@@ -81,13 +81,18 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Multiclass label encoding ──────────────────────────────────────────────────
-# XGBoost 2.x requires integer labels for multiclass targets; string labels raise
-# "Invalid classes inferred from unique values of y". We define the canonical
-# mapping here so training and serving always use the same integer ↔ class name
-# correspondence.
+# XGBoost 2.x requires class labels to be consecutive integers starting at 0.
+# A gap in the sequence (e.g. [0,1,2,3,5] with 4 missing) raises
+# "Invalid classes inferred from unique values of y".
 #
-# Alphabetical order matches what sklearn's LabelEncoder would produce, which
-# keeps the encoding stable if the API ever needs to re-derive it.
+# "rnf" (Random Failures) is intentionally absent: sensor_simulator.py never
+# injects RNF because random failures have no sensor signature to learn from.
+# Including "rnf" in the mapping created a permanent gap at index 4 because
+# the class was present in the list but never in the data.
+#
+# Remaining classes are kept in alphabetical order (hdf, none, osf, pwf, twf)
+# so the mapping stays stable and matches what sklearn's LabelEncoder would
+# produce if it were ever used to re-derive the encoding.
 
-FAILURE_TYPE_CLASSES = ["hdf", "none", "osf", "pwf", "rnf", "twf"]   # index → name
+FAILURE_TYPE_CLASSES = ["hdf", "none", "osf", "pwf", "twf"]          # index → name; rnf excluded (never in data)
 FAILURE_TYPE_TO_INT  = {name: i for i, name in enumerate(FAILURE_TYPE_CLASSES)}  # name → index
