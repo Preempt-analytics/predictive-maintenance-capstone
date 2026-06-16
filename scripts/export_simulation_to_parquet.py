@@ -2,12 +2,12 @@
 ETL Export — Simulation Database → CSV
 ========================================
 Reads accumulated sensor readings from simulation.db and converts them
-into the exact column format of data/ai4i2020.csv so the retraining loop
+into the exact column format of data/ai4i2020.parquet so the retraining loop
 can treat simulated data as new labelled observations.
 
 Why this step is necessary
 --------------------------
-The DVC pipeline retrains from data/ai4i2020.csv — a flat CSV in the
+The DVC pipeline retrains from data/ai4i2020.parquet — a flat CSV in the
 original AI4I 2020 format. The simulator writes to an SQLite database
 with extra columns (machine_id, predicted_failure, mode, etc.) that the
 training pipeline does not understand. This script bridges the two worlds.
@@ -73,7 +73,7 @@ Four choices that shaped this script — and why they were made this way:
      lets you export only the new batch.
 
   4. --dry-run is there to protect a DVC-tracked file.
-     Once you run `dvc add data/ai4i2020.csv`, the CSV is tracked by its
+     Once you run `dvc add data/ai4i2020.parquet`, the CSV is tracked by its
      hash. Overwriting it without reviewing what will change is risky —
      DVC will faithfully record a bad dataset just as willingly as a good
      one. --dry-run shows the failure rate, per-type flag counts, and a row
@@ -91,47 +91,47 @@ Retraining loop
 The fastest path — one command does everything:
 
   # Export, push to DagsHub, and fire the GitHub Actions retrain workflow:
-  python scripts/export_simulation_to_csv.py --push --retrain
+  python scripts/export_simulation_to_parquet.py --push --retrain
 
   # Export and push only (data accumulation, no retrain triggered):
-  python scripts/export_simulation_to_csv.py --push
+  python scripts/export_simulation_to_parquet.py --push
 
 The manual equivalent of --push --retrain (for reference):
 
-  1. python scripts/export_simulation_to_csv.py   ← this script
-  2. dvc add data/ai4i2020.csv          # update the .dvc pointer (local only)
-  3. dvc push data/ai4i2020.csv         # upload the CSV to DagsHub remote
+  1. python scripts/export_simulation_to_parquet.py   ← this script
+  2. dvc add data/ai4i2020.parquet          # update the .dvc pointer (local only)
+  3. dvc push data/ai4i2020.parquet         # upload the CSV to DagsHub remote
   4. # write a UTC timestamp into retrain.trigger
-  5. git add data/ai4i2020.csv.dvc retrain.trigger
+  5. git add data/ai4i2020.parquet.dvc retrain.trigger
   6. git commit -m "retrain: add N simulated observations [drift]"
   7. git push                           # GitHub Actions fires because retrain.trigger changed
 
-  GitHub Actions watches retrain.trigger, not ai4i2020.csv.dvc. Omitting step 4-5
+  GitHub Actions watches retrain.trigger, not ai4i2020.parquet.dvc. Omitting step 4-5
   (i.e. using --push without --retrain) pushes the data silently with no workflow fired.
   dvc repro is NOT run locally — GitHub Actions handles it in CI.
 
 Usage
 -----
   # Append new simulation rows to the existing dataset (default):
-  python scripts/export_simulation_to_csv.py
+  python scripts/export_simulation_to_parquet.py
 
   # Export and trigger retraining in one step (runs dvc add/push + git commit/push):
-  python scripts/export_simulation_to_csv.py --push
+  python scripts/export_simulation_to_parquet.py --push
 
   # Write to a separate file first (safe for inspection):
-  python scripts/export_simulation_to_csv.py --output data/simulated_batch.csv --no-append
+  python scripts/export_simulation_to_parquet.py --output data/simulated_batch.parquet --no-append
 
   # Only export rows from after a specific timestamp:
-  python scripts/export_simulation_to_csv.py --since "2025-01-01T00:00:00"
+  python scripts/export_simulation_to_parquet.py --since "2025-01-01T00:00:00"
 
   # Dry run — show counts and column preview, write nothing:
-  python scripts/export_simulation_to_csv.py --dry-run
+  python scripts/export_simulation_to_parquet.py --dry-run
 
   # Export and delete the exported rows from simulation.db (keeps DB small):
-  python scripts/export_simulation_to_csv.py --purge
+  python scripts/export_simulation_to_parquet.py --purge
 
   # Export, purge DB, and trigger retraining:
-  python scripts/export_simulation_to_csv.py --purge --push
+  python scripts/export_simulation_to_parquet.py --purge --push
 """
 
 import sqlite3
@@ -301,7 +301,7 @@ def purge_exported_rows(db_path: Path, row_ids: list[int]) -> int:
     return deleted
 
 
-def convert_to_csv_format(sim_df: pd.DataFrame, starting_udi: int) -> pd.DataFrame:
+def convert_to_parquet_format(sim_df: pd.DataFrame, starting_udi: int) -> pd.DataFrame:
     """Convert simulation DataFrame to original CSV column layout.
 
     Args:
@@ -310,7 +310,7 @@ def convert_to_csv_format(sim_df: pd.DataFrame, starting_udi: int) -> pd.DataFra
                       rows get consecutive integers.
 
     Returns:
-        DataFrame with exactly the same columns as data/ai4i2020.csv.
+        DataFrame with exactly the same columns as data/ai4i2020.parquet.
     """
     rows = []
     for offset, (_, row) in enumerate(sim_df.iterrows()):
@@ -468,15 +468,15 @@ def main(
     push: bool,
     retrain: bool,
 ) -> None:
-    """Convert simulation.db readings to the AI4I CSV format for DVC retraining.
+    """Convert simulation.db readings to the AI4I Parquet format for DVC retraining.
 
     Typical retraining workflow after collecting enough simulation data:
 
     \b
-    1. python scripts/export_simulation_to_csv.py
-    2. dvc add data/ai4i2020.csv
-    3. dvc push data/ai4i2020.csv
-    4. git add data/ai4i2020.csv.dvc
+    1. python scripts/export_simulation_to_parquet.py
+    2. dvc add data/ai4i2020.parquet
+    3. dvc push data/ai4i2020.parquet
+    4. git add data/ai4i2020.parquet.dvc
     5. git commit -m "retrain: add N simulated observations"
     6. git push   ← GitHub Actions retrain workflow starts automatically
 
@@ -505,7 +505,7 @@ def main(
         click.echo("  No existing Parquet found (or --no-append set). Starting UDI at 1.")
 
     # ── Convert ────────────────────────────────────────────────────────────────
-    export_df = convert_to_csv_format(sim_df, starting_udi)
+    export_df = convert_to_parquet_format(sim_df, starting_udi)
 
     # ── Preview ────────────────────────────────────────────────────────────────
     failure_rate = export_df["Machine failure"].mean()

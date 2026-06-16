@@ -38,7 +38,7 @@ Inference loop:
                                                                       simulation.db
 
 Retrain loop:
-  simulation.db ──► detect_drift.py ──► export_simulation_to_csv.py ──► DagsHub (DVC)
+  simulation.db ──► detect_drift.py ──► export_simulation_to_parquet.py ──► DagsHub (DVC)
                                                                             │
                                                               retrain.trigger updated
                                                                             │
@@ -58,7 +58,7 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 
 ```
 ├── data/
-│   ├── ai4i2020.csv               # DVC-tracked training dataset (grows with each export)
+│   ├── ai4i2020.parquet            # DVC-tracked training dataset (grows with each export)
 │   └── ai4i2020_baseline.csv      # Frozen drift reference — never modified
 ├── src/
 │   ├── feature_transformation.py  # Single source of truth for all feature engineering
@@ -67,7 +67,7 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 │   └── api.py                     # FastAPI serving layer — loads @production from MLflow
 ├── scripts/
 │   ├── detect_drift.py            # Evidently AI: simulation.db vs baseline CSV
-│   ├── export_simulation_to_csv.py # ETL: simulation.db → AI4I CSV format → DagsHub
+│   ├── export_simulation_to_parquet.py # ETL: simulation.db → AI4I Parquet format → DagsHub
 │   └── promote_model.py           # Two-gate promotion: improvement + floor → @production
 ├── .github/workflows/
 │   └── retrain.yml                # Triggered by retrain.trigger; retrains XGBoost + promotes
@@ -102,7 +102,7 @@ dvc remote modify origin --local user YOUR_DAGSHUB_USERNAME
 dvc remote modify origin --local password YOUR_DAGSHUB_TOKEN
 
 # 3. Pull training data and frozen baseline
-dvc pull data/ai4i2020.csv data/ai4i2020_baseline.csv
+dvc pull data/ai4i2020.parquet data/ai4i2020_baseline.csv
 
 # 4. Set MLflow tracking credentials (add to your .env or shell profile)
 export MLFLOW_TRACKING_URI=https://dagshub.com/YOUR_USERNAME/predictive-maintenance-capstone.mlflow
@@ -188,13 +188,13 @@ The HTML report is saved to `reports/drift_report.html` — open it in a browser
 
 ```bash
 # Preview — show counts and column layout, write nothing
-python scripts/export_simulation_to_csv.py --dry-run
+python scripts/export_simulation_to_parquet.py --dry-run
 
 # Export and push to DagsHub (data accumulation only, no retrain)
-python scripts/export_simulation_to_csv.py --push
+python scripts/export_simulation_to_parquet.py --push
 
 # Export, push, and trigger the GitHub Actions retrain workflow
-python scripts/export_simulation_to_csv.py --push --retrain
+python scripts/export_simulation_to_parquet.py --push --retrain
 ```
 
 ### Reload the API after model promotion
@@ -242,7 +242,7 @@ Add them at: **GitHub repo → Settings → Secrets and variables → Actions �
 5. Reloads the serving API at `API_URL` if a model was promoted (skipped if `API_URL` is not set)
 
 **What triggers it:**
-The workflow watches `retrain.trigger`, not `data/ai4i2020.csv.dvc`. Only a push that updates `retrain.trigger` (i.e., drift was detected) fires the workflow. Data-accumulation pushes without drift leave `retrain.trigger` unchanged — no workflow runs.
+The workflow watches `retrain.trigger`, not `data/ai4i2020.parquet.dvc`. Only a push that updates `retrain.trigger` (i.e., drift was detected) fires the workflow. Data-accumulation pushes without drift leave `retrain.trigger` unchanged — no workflow runs.
 
 **Manual trigger:** Actions tab → "Retrain on new data" → "Run workflow" → select `main`
 
@@ -254,7 +254,7 @@ The workflow watches `retrain.trigger`, not `data/ai4i2020.csv.dvc`. Only a push
 |------|-----------------|
 | MLflow experiments and runs | `dagshub.com/USERNAME/REPO` → Experiments tab |
 | Model registry and `@production` alias | Experiments tab → Models |
-| DVC-tracked dataset versions | Files tab → `data/ai4i2020.csv` → History |
+| DVC-tracked dataset versions | Files tab → `data/ai4i2020.parquet` → History |
 | GitHub Actions CI results | Connect repo via DagsHub repo Settings → Integrations |
 
 To surface GitHub Actions results in DagsHub: go to your DagsHub repo → **Settings → Integrations → GitHub Actions**. Once connected, each workflow run appears alongside the corresponding MLflow experiment.

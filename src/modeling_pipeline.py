@@ -523,7 +523,7 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
     the model.
 
     Args:
-        df:     Raw DataFrame from ai4i2020.csv.
+        df:     Raw DataFrame from ai4i2020.parquet.
         config: Active experiment config. target_type controls whether failure_type
                 is constructed from the binary flag columns (multiclass only).
 
@@ -578,7 +578,7 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
     f1_train is logged alongside f1_test to surface overfitting at a glance.
 
     Args:
-        df:     Raw DataFrame from ai4i2020.csv.
+        df:     Raw DataFrame from ai4i2020.parquet.
         config: Active experiment config. Drives split size, target column,
                 classifier selection, and metric averaging strategy.
 
@@ -707,7 +707,7 @@ def tune_model(
     train_model() call after the best params are applied to classifier_factory.
 
     Args:
-        df:       Raw DataFrame from ai4i2020.csv.
+        df:       Raw DataFrame from ai4i2020.parquet.
         config:   Active experiment config. Must have param_space defined.
         n_trials: Number of Optuna trials to run. More trials = better search
                   but longer runtime. 30 is a reasonable default for a laptop.

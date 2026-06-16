@@ -92,8 +92,8 @@ DATA_CSV      = _ROOT / "data" / "ai4i2020_baseline.csv"  # frozen original 10k 
 SIMULATION_DB = _ROOT / "simulation.db"                   # current: live simulation readings
 REPORT_DIR    = _ROOT / "reports"                         # where the HTML report is saved
 
-# WHY a frozen baseline and not the growing ai4i2020.csv?
-# Every time export_simulation_to_csv.py runs, new rows enter ai4i2020.csv.
+# WHY a frozen baseline and not the growing ai4i2020.parquet?
+# Every time export_simulation_to_parquet.py runs, new rows are appended to ai4i2020.parquet.
 # If we used that file as the drift reference, the baseline would shift toward
 # the current distribution after every retrain — making drift look smaller than
 # it actually is over time (the ratchet effect).
@@ -414,7 +414,7 @@ Examples:
     print(f"      Threshold  : {args.threshold:.0%} of features must drift to trigger alert")
     print(f"      Detected   : {drifted_count}/{total_count} features drifted ({drift_share:.0%})")
 
-    export_script = pathlib.Path(__file__).parent / "export_simulation_to_csv.py"
+    export_script = pathlib.Path(__file__).parent / "export_simulation_to_parquet.py"
 
     if drift_share >= args.threshold:
         print(f"\n  *** DRIFT DETECTED — {drifted_count} feature(s) shifted significantly ***")
@@ -428,7 +428,7 @@ Examples:
         else:
             print(f"  Next steps:")
             print(f"    1. Open the HTML report and check which features changed.")
-            print(f"    2. Run: python scripts/export_simulation_to_csv.py --push --retrain")
+            print(f"    2. Run: python scripts/export_simulation_to_parquet.py --push --retrain")
             print(f"       (or re-run detect_drift.py with --export-on-drift to do this automatically)")
     else:
         print(f"\n  PASS — distribution looks stable. No retraining triggered.")

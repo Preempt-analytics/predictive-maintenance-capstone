@@ -10,9 +10,9 @@
 # same Python version, the same dependency versions, and the same data.
 #
 # WHEN IT RUNS
-# The trigger is a push to main that changes data/ai4i2020.csv.dvc.
-# That .dvc file is a tiny pointer (a content hash). When export_simulation_to_csv.py
-# appends new rows and you run `dvc add data/ai4i2020.csv`, the hash changes.
+# The trigger is a push to main that changes data/ai4i2020.parquet.dvc.
+# That .dvc file is a tiny pointer (a content hash). When export_simulation_to_parquet.py
+# appends new rows and you run `dvc add data/ai4i2020.parquet`, the hash changes.
 # Committing and pushing that changed pointer is the signal to CI that
 # new training data is ready - no separate webhook or manual trigger needed.
 #
@@ -34,7 +34,7 @@ on:
       - main
     paths:
       - "retrain.trigger"   # only fires when drift-triggered export updates this file
-                            # CSV-only pushes (no drift) update ai4i2020.csv.dvc but
+                            # CSV-only pushes (no drift) update ai4i2020.parquet.dvc but
                             # leave retrain.trigger unchanged, so no workflow runs.
 
   workflow_dispatch:

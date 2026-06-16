@@ -22,7 +22,7 @@ Every change must leave the two-loop architecture intact:
 
 ```
 Inference loop : client → POST /predict (api.py) → MLflow @production → response
-Retraining loop: simulation.db → export_simulation_to_csv.py → dvc repro → new model
+Retraining loop: simulation.db → export_simulation_to_parquet.py → dvc repro → new model
 ```
 
 A change is not complete if either loop is broken, even if the modified file passes
@@ -166,11 +166,11 @@ confirm the alias exists before running either component.
 ### Contract 3 — SQLite Schema
 
 **Owner:** `src/sensor_simulator.py` (defines schema, writes rows)
-**Dependents:** `scripts/export_simulation_to_csv.py` (reads by column name)
+**Dependents:** `scripts/export_simulation_to_parquet.py` (reads by column name)
 
 The `sensor_readings` table schema is defined once in `init_db()`. The export script
 reads it by column name — it does not introspect the schema. Adding, removing, or
-renaming a column in `sensor_simulator.py` without updating `export_simulation_to_csv.py`
+renaming a column in `sensor_simulator.py` without updating `export_simulation_to_parquet.py`
 causes the export to either silently produce wrong values or raise a KeyError.
 
 **Columns the export script depends on (do not rename without updating the script):**
@@ -192,7 +192,7 @@ moved or renamed, every stage that lists them as a dep becomes permanently stale
 ```
 src/modeling_pipeline.py      — listed as dep in all 12 stages
 src/feature_transformation.py — listed as dep in all 12 stages
-data/ai4i2020.csv             — listed as dep in all 12 stages (DVC-tracked)
+data/ai4i2020.parquet         — listed as dep in all 12 stages (DVC-tracked)
 params.yaml                   — referenced for key-level invalidation
 ```
 
@@ -203,9 +203,9 @@ and running `dvc repro --dry` to confirm no stages are unexpectedly stale.
 
 ### Contract 5 — CSV Column Format
 
-**Owner:** `data/ai4i2020.csv` (DVC-tracked)
+**Owner:** `data/ai4i2020.parquet` (DVC-tracked)
 **Dependents:** `src/modeling_pipeline.py`, `src/feature_transformation.py`,
-               `scripts/export_simulation_to_csv.py`
+               `scripts/export_simulation_to_parquet.py`
 
 The original AI4I 2020 column names flow through every component:
 
@@ -215,9 +215,9 @@ Rotational speed [rpm], Torque [Nm], Tool wear [min],
 Machine failure, TWF, HDF, PWF, OSF, RNF
 ```
 
-`export_simulation_to_csv.py` writes these exact names when appending simulated data.
+`export_simulation_to_parquet.py` writes these exact names when appending simulated data.
 `feature_transformation.py`'s `COLUMN_RENAME` dict maps them to internal names.
-Any deviation between what `export_simulation_to_csv.py` writes and what
+Any deviation between what `export_simulation_to_parquet.py` writes and what
 `feature_transformation.py` expects produces silent wrong features at training time.
 
 ---
@@ -230,7 +230,7 @@ Before committing any change, run through the applicable rows:
 |-------------|-------|
 | Edit `feature_transformation.py` | All three importers updated? Training re-run needed? |
 | Edit MLflow model names | `sensor_simulator.py` and `api.py` updated? `@production` alias re-set? |
-| Edit SQLite schema in `sensor_simulator.py` | `export_simulation_to_csv.py` column references updated? |
+| Edit SQLite schema in `sensor_simulator.py` | `export_simulation_to_parquet.py` column references updated? |
 | Move or rename any file in `src/` | `dvc.yaml` deps updated? `dvc repro --dry` passes? |
 | Edit `params.yaml` keys | `modeling_pipeline.py` reads updated? `dvc repro --dry` reflects correct invalidation? |
 | Add a new feature to `FEATURES` | Is the feature computable from raw sensor values only? ETL export updated? |
@@ -248,7 +248,7 @@ Changes in these areas have caused silent failures before. Approach with extra c
   Removing `sparse=False` breaks the scaler silently.
 - **`@production` alias vs `/Production` stage** — MLflow 2.9+ uses aliases, not stages.
   Never use the `/Production` URI format. Always use `models:/{name}@production`.
-- **`dvc add` on `data/ai4i2020.csv`** — this overwrites the `.dvc` pointer. Always
+- **`dvc add` on `data/ai4i2020.parquet`** — this overwrites the `.dvc` pointer. Always
   run `--dry-run` on the export script first to verify the dataset looks correct.
 - **`mlflow.start_run()` vs `MlflowClient()`** — run metadata (params, metrics, tags)
   goes inside `start_run`. Registry metadata (registered model description, version tags)
@@ -262,9 +262,9 @@ Changes in these areas have caused silent failures before. Approach with extra c
 | File | Role | Reads from | Writes to |
 |------|------|-----------|-----------|
 | `src/feature_transformation.py` | Feature contract | — | imported by 3 files |
-| `src/modeling_pipeline.py` | Training | `data/ai4i2020.csv`, `params.yaml` | MLflow registry |
+| `src/modeling_pipeline.py` | Training | `data/ai4i2020.parquet`, `params.yaml` | MLflow registry |
 | `src/sensor_simulator.py` | Inference + data gen | MLflow `@production` | `simulation.db` |
 | `src/api.py` | Serving | MLflow `@production` | HTTP responses |
-| `scripts/export_simulation_to_csv.py` | ETL bridge | `simulation.db` | `data/ai4i2020.csv` |
-| `dvc.yaml` | Pipeline definition | `src/*.py`, `data/*.csv` | DVC cache |
+| `scripts/export_simulation_to_parquet.py` | ETL bridge | `simulation.db` | `data/ai4i2020.parquet` |
+| `dvc.yaml` | Pipeline definition | `src/*.py`, `data/*.parquet` | DVC cache |
 | `params.yaml` | Pipeline config | — | read by `dvc.yaml` stages |

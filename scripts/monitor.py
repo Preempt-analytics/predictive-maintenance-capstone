@@ -9,7 +9,7 @@
 #
 # WHAT THIS SCRIPT DOES
 # Runs drift detection on a schedule. If drift is detected it delegates the
-# entire export-and-push sequence to export_simulation_to_csv.py, which
+# entire export-and-push sequence to export_simulation_to_parquet.py, which
 # already contains the dvc add → dvc push → git commit → git push pipeline.
 # This script is purely the scheduler and audit logger — it adds no new logic.
 #
@@ -32,7 +32,7 @@
 #        +-- drift detected
 #              |
 #              v
-#         export_simulation_to_csv.py --purge --push --retrain
+#         export_simulation_to_parquet.py --purge --push --retrain
 #              |   appends rows to CSV, clears DB, dvc add/push,
 #              |   writes retrain.trigger, git commit + git push
 #              v
@@ -103,17 +103,17 @@ def check_drift() -> None:
         return
 
     # ── Step 2: Export, push, and trigger retraining ─────────────────────────
-    # Drift confirmed. export_simulation_to_csv.py owns the full pipeline:
+    # Drift confirmed. export_simulation_to_parquet.py owns the full pipeline:
     #   --purge   : removes exported rows from simulation.db after writing
     #   --push    : runs dvc add → dvc push to upload the updated CSV to DagsHub
     #   --retrain : writes a UTC timestamp to retrain.trigger and commits + pushes
     #
     # GitHub Actions watches retrain.trigger — a change there fires retrain.yml.
     # All error handling, commit messaging, and the Actions URL are handled inside
-    # export_simulation_to_csv.py's _push_to_remote() function.
+    # export_simulation_to_parquet.py's _push_to_remote() function.
     print("  Drift detected. Exporting data and triggering retrain...")
     export_result = subprocess.run(
-        ["python", "scripts/export_simulation_to_csv.py", "--purge", "--push", "--retrain"],
+        ["python", "scripts/export_simulation_to_parquet.py", "--purge", "--push", "--retrain"],
         cwd=ROOT,
     )
 

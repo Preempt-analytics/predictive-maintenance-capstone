@@ -6,7 +6,7 @@ This module is the inference half of the two-loop architecture.
 Two-loop recap
 --------------
   Inference loop  — client → POST /predict → this API → Production model → JSON response
-  Retraining loop — simulation.db → export_simulation_to_csv.py → dvc repro → new model
+  Retraining loop — simulation.db → export_simulation_to_parquet.py → dvc repro → new model
 
 The API's only job is to answer: "Given these sensor readings, will this machine fail?"
 It does not train, it does not store, it does not decide which model to use — MLflow's
