@@ -50,7 +50,7 @@ Retrain loop:
                                                                     new @production alias
 ```
 
-The two loops are intentionally decoupled. The API serves the current `@production` model continuously. The retrain loop fires only when Evidently AI detects a meaningful distribution shift — a CSV push without drift detected does not trigger retraining.
+The two loops are intentionally decoupled. The API serves the current `@production` model continuously. The retrain loop fires only when Evidently AI detects a meaningful distribution shift — a data push without drift does not trigger retraining.
 
 ---
 
@@ -59,6 +59,7 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 ```
 ├── data/
 │   ├── ai4i2020.parquet            # DVC-tracked training dataset (grows with each export)
+│   ├── ai4i2020.csv                # Original UCI dataset — kept for inspection only, not used by any script
 │   └── ai4i2020_baseline.csv      # Frozen drift reference — never modified
 ├── src/
 │   ├── feature_transformation.py  # Single source of truth for all feature engineering
@@ -76,6 +77,22 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 ├── params.yaml                    # Hyperparameters for all model families
 └── simulation.db                  # Local SQLite — gitignored; holds live sensor readings
 ```
+
+---
+
+## Training data — two files, two purposes
+
+The `data/` directory contains two files for the same dataset and one important distinction between them:
+
+| File | Format | Purpose | Modified by scripts? |
+|------|--------|---------|----------------------|
+| `ai4i2020.parquet` | Parquet (binary) | Active training dataset — grows with each retrain cycle | Yes — appended by `export_simulation_to_parquet.py` |
+| `ai4i2020.csv` | CSV (text) | Human-readable copy of the original UCI dataset | No — kept for inspection only |
+| `ai4i2020_baseline.csv` | CSV (text) | Frozen drift reference | No — never modified |
+
+**Why Parquet for the pipeline?** Parquet is a compressed, columnar format — roughly 10× smaller than the equivalent CSV and significantly faster for pandas to load. All scripts (`modeling_pipeline.py`, `export_simulation_to_parquet.py`) read and write `ai4i2020.parquet`. DVC tracks this file.
+
+**Why keep the CSV?** The original data from the UCI repository arrived as a CSV. It is kept as-is so you can open it in Excel or a text editor and inspect the raw values without needing any special tooling. It is not tracked by DVC and is not read by any script — it is reference material only.
 
 ---
 
@@ -145,8 +162,8 @@ python src/sensor_simulator.py --n-readings 1000 --mode normal --detect-drift --
 What `--detect-drift --export-on-drift` does automatically after the simulation finishes:
 
 1. Compares the new readings against `data/ai4i2020_baseline.csv` using Evidently AI
-2. **Drift detected** → exports CSV, pushes to DagsHub, updates `retrain.trigger` → GitHub Actions fires the retrain workflow
-3. **No drift** → exports CSV to DagsHub for accumulation → no retraining triggered
+2. **Drift detected** → exports data as Parquet, pushes to DagsHub, updates `retrain.trigger` → GitHub Actions fires the retrain workflow
+3. **No drift** → exports data to DagsHub for accumulation → no retraining triggered
 
 **Simulation modes:**
 
