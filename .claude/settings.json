@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c ' *)",
-      "Bash(python -c \"import pandas as pd; df = pd.read_csv\\('data/ai4i2020.csv'\\); print\\('Total rows:', len\\(df\\)\\); print\\('Unique UDI:', df['UDI'].nunique\\(\\)\\); print\\('Unique Product ID:', df['Product ID'].nunique\\(\\)\\); print\\('Max UDI count:', df['UDI'].value_counts\\(\\).max\\(\\)\\); print\\('Max Product ID count:', df['Product ID'].value_counts\\(\\).max\\(\\)\\)\")"
-    ]
-  }
-}

@@ -125,6 +125,12 @@ dvc pull data/ai4i2020.parquet data/ai4i2020_baseline.csv
 export MLFLOW_TRACKING_URI=https://dagshub.com/YOUR_USERNAME/predictive-maintenance-capstone.mlflow
 export MLFLOW_TRACKING_USERNAME=YOUR_DAGSHUB_USERNAME
 export MLFLOW_TRACKING_PASSWORD=YOUR_DAGSHUB_TOKEN
+
+# 5. Create the simulation database file (required before running Docker)
+# docker-compose.yml bind-mounts ./simulation.db into every container. If the
+# file does not exist on the host before `docker compose up`, Docker creates a
+# directory with that name instead — which breaks SQLite. One touch fixes this.
+touch simulation.db
 ```
 
 ---
