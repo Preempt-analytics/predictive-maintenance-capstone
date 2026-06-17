@@ -44,10 +44,13 @@ import pandas as pd
 import xgboost as xgb
 import lightgbm as lgb
 from dotenv import load_dotenv
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import (
+    brier_score_loss, f1_score, precision_score, recall_score, roc_auc_score,
+)
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.neural_network import MLPClassifier
@@ -77,6 +80,34 @@ CV_FOLDS      = _p["cv_folds"]
 # the classifiers here need.
 DATA_PATH        = Path("data/ai4i2020.parquet")
 TRAINING_WINDOW  = 50_000   # rows; only takes effect once the dataset exceeds this size
+
+# ── Calibration ─────────────────────────────────────────────────────────────────
+# Tree-based models tend to push predict_proba toward 0 or 1 more often than
+# they're actually right — a confident-looking number that isn't trustworthy.
+# CalibratedClassifierCV corrects this by holding out folds, fitting the raw
+# classifier on the rest, and learning a correction curve from the held-out
+# predictions. cv=3 (not sklearn's default of 5): the rarest class in this
+# dataset (PWF) has only ~7 rows total, ~5 after the 80/20 split — 5 folds
+# would leave under 1 sample per fold and crash; 3 leaves enough margin.
+CALIBRATION_CV     = 3
+CALIBRATION_METHOD = "sigmoid"   # Platt scaling — safer than isotonic on small/imbalanced classes
+
+# ── xgboost / scikit-learn version mismatch workaround ──────────────────────────
+# xgboost==2.0.3 predates sklearn 1.8's tag-based estimator typing, so
+# sklearn.base.is_classifier(XGBClassifier()) incorrectly returns False —
+# XGBClassifier reports no estimator_type tag at all. CalibratedClassifierCV
+# calls is_classifier() internally to decide whether predict_proba is valid;
+# misdetected as "not a classifier", it raises instead of calibrating.
+# This patches the CLASS (not an instance) because CalibratedClassifierCV
+# clones the estimator internally for each CV fold — an instance-level patch
+# would not survive the clone. Remove this once xgboost is upgraded past the
+# version that added proper __sklearn_tags__ support (2.1+).
+_original_xgb_tags = xgb.XGBClassifier.__sklearn_tags__
+def _patched_xgb_tags(self):
+    tags = _original_xgb_tags(self)
+    tags.estimator_type = "classifier"
+    return tags
+xgb.XGBClassifier.__sklearn_tags__ = _patched_xgb_tags
 
 from feature_transformation import FEATURES, FAILURE_TYPE_TO_INT, engineer_features  # noqa: E402
 
@@ -550,7 +581,11 @@ def preprocess(df: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame:
 # All hyperparameter decisions live in the EXPERIMENTS registry.
 
 def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
-    """Instantiate the classifier defined in config.classifier_factory.
+    """Instantiate the classifier defined in config.classifier_factory, calibrated.
+
+    Every classifier is wrapped in CalibratedClassifierCV so predict_proba
+    output can be trusted as an actual probability, not just a confident-looking
+    raw score — see the CALIBRATION_CV comment above for why cv=3.
 
     Args:
         config:           Active experiment config.
@@ -559,9 +594,10 @@ def _build_classifier(config: ExperimentConfig, imbalance_ratio: float):
                           ignore it (declared as lambda _).
 
     Returns:
-        Unfitted sklearn-compatible classifier instance.
+        Unfitted CalibratedClassifierCV wrapping the configured classifier.
     """
-    return config.classifier_factory(imbalance_ratio)
+    base_classifier = config.classifier_factory(imbalance_ratio)
+    return CalibratedClassifierCV(base_classifier, method=CALIBRATION_METHOD, cv=CALIBRATION_CV)
 
 
 # ── Training ───────────────────────────────────────────────────────────────────
@@ -586,8 +622,8 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
         pipeline (sklearn.Pipeline):
             Fitted DictVectorizer + classifier. Ready for mlflow.sklearn.log_model().
         metrics (dict[str, float]):
-            f1_train, f1_test, precision_test, recall_test — always present.
-            roc_auc_test — binary experiments only.
+            f1_train, f1_test, precision_test, recall_test, brier_score —
+            always present. roc_auc_test — binary experiments only.
         params (dict[str, object]):
             Full classifier hyperparameters from get_params(), plus model_family,
             target_type, and test_size. Logged to MLflow to reproduce this run.
@@ -636,11 +672,10 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
     y_pred_train = pipeline.predict(X_train_records)
     y_pred_test = pipeline.predict(X_test_records)
 
-    y_prob_test = (
-        pipeline.predict_proba(X_test_records)[:, 1]  # positive-class probability score
-        if config.target_type == "binary"
-        else None
-    )
+    # Full probability matrix — needed for the Brier score regardless of
+    # target_type. ROC-AUC (binary only) needs just the positive-class column.
+    proba_test = pipeline.predict_proba(X_test_records)
+    y_prob_test = proba_test[:, 1] if config.target_type == "binary" else None
 
     average = config.metric_average  # "binary" or "macro" — stored per experiment
     f1_train = f1_score(y_train, y_pred_train, average=average)
@@ -657,22 +692,36 @@ def train_model(df: pd.DataFrame, config: ExperimentConfig):
             "consider tightening depth/regularisation params."
         )
 
+    # scale_by_half=True forces both binary and multiclass into the same [0, 1]
+    # range. Without it, sklearn's "auto" default leaves multiclass in [0, 2] —
+    # every multiclass run would look twice as miscalibrated as a binary run
+    # for no reason other than scale, making cross-experiment comparison in
+    # MLflow misleading.
+    brier_score = brier_score_loss(y_test, proba_test, scale_by_half=True)
+
     metrics: dict[str, float] = {
         "f1_train":       f1_train,
         "f1_test":        f1_test,
         "overfit_delta":  overfit_delta,   # logged to MLflow so you can sort/filter by it
         "precision_test": precision_score(y_test, y_pred_test, average=average),
         "recall_test":    recall_score(y_test, y_pred_test, average=average),
+        "brier_score":    brier_score,     # lower = better-calibrated probabilities; 0 = perfect, 0.25 = "always guess 50%"
     }
     if y_prob_test is not None:
         metrics["roc_auc_test"] = roc_auc_score(y_test, y_prob_test)
 
     params: dict[str, object] = {
-        **classifier.get_params(),        # full hyperparameter set from the classifier
+        # "estimator" holds the raw nested classifier object itself (not a
+        # string) — CalibratedClassifierCV.get_params(deep=True) duplicates
+        # every one of its hyperparameters under "estimator__*" already, so
+        # dropping the bare object avoids logging a noisy repr() to MLflow.
+        k: v for k, v in classifier.get_params().items() if k != "estimator"
+    }
+    params.update({
         "model_family": config.model_family,
         "target_type":  config.target_type,
         "test_size":    TEST_SIZE,
-    }
+    })
 
     return pipeline, metrics, params
 
@@ -974,14 +1023,14 @@ def log_model(
 def write_cml_metrics(metrics: dict) -> None:
     """Write key test metrics to metrics.txt for a CML pull-request comment.
 
-    Includes f1, precision, recall on the test set, and roc_auc (binary only).
-    f1_train is intentionally omitted — reviewers need test performance,
-    not evidence of fitting.
+    Includes f1, precision, recall, and brier_score on the test set, plus
+    roc_auc (binary only). f1_train is intentionally omitted — reviewers need
+    test performance, not evidence of fitting.
 
     Args:
         metrics: Dict produced by train_model(). Keys f1_test, precision_test,
-                 and recall_test are always present. roc_auc_test is optional
-                 (binary experiments only).
+                 recall_test, and brier_score are always present. roc_auc_test
+                 is optional (binary experiments only).
     """
     lines = [
         "# Training Metrics",
@@ -989,6 +1038,7 @@ def write_cml_metrics(metrics: dict) -> None:
         f"f1_test:        {metrics['f1_test']:.4f}",
         f"precision_test: {metrics['precision_test']:.4f}",
         f"recall_test:    {metrics['recall_test']:.4f}",
+        f"brier_score:    {metrics['brier_score']:.4f}  (lower is better; 0 = perfect)",
     ]
     if "roc_auc_test" in metrics:
         lines.append(f"roc_auc_test:   {metrics['roc_auc_test']:.4f}")
