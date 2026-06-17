@@ -89,7 +89,7 @@ from feature_transformation import FEATURES, engineer_features   # 9 feature nam
 # working directory (as long as you run it from the repo root or use --csv / --db).
 _ROOT         = pathlib.Path(__file__).parent.parent
 DATA_CSV      = _ROOT / "data" / "ai4i2020_baseline.csv"  # frozen original 10k rows — never appended to
-SIMULATION_DB = _ROOT / "simulation.db"                   # current: live simulation readings
+SIMULATION_DB = _ROOT / "data" / "simulation.db"          # inside data/ so the existing Docker volume covers it
 REPORT_DIR    = _ROOT / "reports"                         # where the HTML report is saved
 
 # WHY a frozen baseline and not the growing ai4i2020.parquet?
@@ -338,7 +338,7 @@ Examples:
     )
     parser.add_argument(
         "--db", default=str(SIMULATION_DB),
-        help="Path to simulation.db (current data). Default: simulation.db",
+        help="Path to simulation.db (current data). Default: data/simulation.db",
     )
     parser.add_argument(
         "--since", default=None,

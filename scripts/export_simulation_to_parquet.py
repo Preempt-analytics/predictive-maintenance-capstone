@@ -148,7 +148,7 @@ import pandas as pd
 # The output is Parquet rather than CSV: same column names and values, but
 # columnar and compressed — DVC tracks it the same way, just a different hash.
 REPO_ROOT      = Path(__file__).resolve().parent.parent
-DB_PATH        = REPO_ROOT / "simulation.db"
+DB_PATH        = REPO_ROOT / "data" / "simulation.db"  # inside data/ so the existing Docker volume covers it
 DEFAULT_OUTPUT = REPO_ROOT / "data" / "ai4i2020.parquet"  # Parquet replaces the growing CSV
 
 # ── Failure type derivation thresholds ───────────────────────────────────────

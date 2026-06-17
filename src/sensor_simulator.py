@@ -191,7 +191,7 @@ BASE_FAILURE_RATE       = 0.034     # 3.4% — matches the training dataset fail
 GRADUAL_DRIFT_PEAK_RATE = 0.25
 SUDDEN_SPIKE_RATE       = 0.40
 
-DB_PATH = Path("simulation.db")     # local SQLite file; gitignored
+DB_PATH = Path("data/simulation.db")  # inside data/ so Docker's bind-mount covers it automatically
 
 
 # ══════════════════════════════════════════════════════════════════════════════

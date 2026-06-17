@@ -60,7 +60,8 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 ├── data/
 │   ├── ai4i2020.parquet            # DVC-tracked training dataset (grows with each export)
 │   ├── ai4i2020.csv                # Original UCI dataset — kept for inspection only, not used by any script
-│   └── ai4i2020_baseline.csv      # Frozen drift reference — never modified
+│   ├── ai4i2020_baseline.csv      # Frozen drift reference — never modified
+│   └── simulation.db              # Local SQLite — gitignored; created automatically on first run
 ├── src/
 │   ├── feature_transformation.py  # Single source of truth for all feature engineering
 │   ├── modeling_pipeline.py       # DVC training stages — 12 model families
@@ -76,7 +77,7 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 ├── retrain.trigger                # Sentinel file — updated on drift; GitHub Actions watches this
 ├── dvc.yaml                       # DVC pipeline definition — 12 training stages
 ├── params.yaml                    # Hyperparameters for all model families
-└── simulation.db                  # Local SQLite — gitignored; holds live sensor readings
+└── dvc.lock                       # DVC run cache — auto-updated by dvc repro
 ```
 
 ---
@@ -127,12 +128,10 @@ export MLFLOW_TRACKING_URI=https://dagshub.com/YOUR_USERNAME/predictive-maintena
 export MLFLOW_TRACKING_USERNAME=YOUR_DAGSHUB_USERNAME
 export MLFLOW_TRACKING_PASSWORD=YOUR_DAGSHUB_TOKEN
 
-# 5. Create the simulation database file (required before running Docker)
-# docker-compose.yml bind-mounts ./simulation.db into every container. If the
-# file does not exist on the host before `docker compose up`, Docker creates a
-# directory with that name instead — which breaks SQLite. One touch fixes this.
-touch simulation.db
 ```
+
+> `data/simulation.db` is created automatically the first time the simulator runs — no manual step needed.
+> It is gitignored and stays local to your machine.
 
 ---
 

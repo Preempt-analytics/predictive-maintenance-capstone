@@ -52,15 +52,13 @@ services:
       # A volume maps a path on your host machine to a path inside the container.
       # Without a volume, files written inside the container disappear when it stops.
       #
-      # simulation.db must be shared between the API, simulator, and monitor.
-      # All three read from or write to the same file. A volume makes that possible.
+      # simulation.db lives inside data/ (data/simulation.db), so the single
+      # data volume below covers it automatically. All three services share the
+      # same host directory — no separate file mount needed.
       #
       # Syntax: "./host/path:/container/path"
       # The left side is relative to this docker-compose.yml file.
-      # The right side must match where the code expects the file (/app/simulation.db).
-      - ./simulation.db:/app/simulation.db
-      # Mount the data directory so the container can access the CSV files
-      # without baking them into the image (see Dockerfile TODO B).
+      # The right side must match where the code expects the directory (/app/data).
       - ./data:/app/data
       - ./reports:/app/reports        # drift reports written here are visible on the host
 
@@ -90,8 +88,7 @@ services:
       - .env                          # needs MLflow credentials for drift detection
 
     volumes:
-      - ./simulation.db:/app/simulation.db      # reads simulation data from here
-      - ./data:/app/data                        # reads baseline CSV from here
+      - ./data:/app/data                        # simulation.db + baseline CSV both live here
       - ./reports:/app/reports                  # writes drift HTML reports here
 
       # TODO C — Git credentials for pushing the retrain trigger
@@ -141,7 +138,6 @@ services:
       - .env
 
     volumes:
-      - ./simulation.db:/app/simulation.db
       - ./data:/app/data
 
     depends_on:

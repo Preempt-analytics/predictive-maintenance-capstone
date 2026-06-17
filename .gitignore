@@ -1,5 +1,5 @@
-# Simulation
-simulation.db
+# Simulation — lives in data/ so the existing data volume covers it in Docker
+data/simulation.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
