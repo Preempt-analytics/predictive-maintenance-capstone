@@ -3,6 +3,39 @@
 Capstone project 2 of the AI Engineering bootcamp at neuefische.
 Predictive maintenance with a focus on MLOps — by Nate and Ivo.
 
+**New here? Skip straight to [Quick start](#quick-start).**
+
+---
+
+## Contents
+
+- [Quick start](#quick-start)
+- [What this project does](#what-this-project-does)
+- [What the model predicts](#what-the-model-predicts)
+- [Architecture — two loops](#architecture--two-loops)
+- [Project structure](#project-structure)
+- [Training data — two files, two purposes](#training-data--two-files-two-purposes)
+- [Prerequisites](#prerequisites)
+- [First-time setup](#first-time-setup)
+- [Running the project](#running-the-project)
+- [Automatic drift monitoring](#automatic-drift-monitoring)
+- [Running individual steps manually](#running-individual-steps-manually)
+- [GitHub Actions setup](#github-actions-setup)
+- [Using DagsHub as a single source of truth](#using-dagshub-as-a-single-source-of-truth)
+- [Team](#team)
+
+---
+
+## Quick start
+
+The fastest way to see the project working end to end:
+
+1. [First-time setup](#first-time-setup) — clone, install, configure DVC and MLflow credentials
+2. [Start the API](#step-1--start-the-api-terminal-1-keep-running) — Terminal 1
+3. [Run the simulator](#step-2--run-the-simulator-terminal-2) — Terminal 2
+
+That's a complete inference loop. If you also want drift detection and retraining to fire automatically — instead of triggering them by hand — see [Three ways to run drift detection](#three-ways-to-run-drift-detection) below.
+
 ---
 
 ## What this project does
@@ -137,6 +170,18 @@ touch simulation.db
 ---
 
 ## Running the project
+
+### Three ways to run drift detection
+
+There are three ways to check for drift and trigger retraining — pick based on what you're doing right now:
+
+| Situation | Use | Where |
+|---|---|---|
+| Testing or demoing the full loop once | Simulator flags `--detect-drift --export-on-drift` | [Step 2](#step-2--run-the-simulator-terminal-2) below |
+| Leaving it running unattended in the background | `monitor.py` on a schedule | [Automatic drift monitoring](#automatic-drift-monitoring) |
+| Debugging one stage in isolation (e.g. why didn't drift fire?) | Run `detect_drift.py` or `export_simulation_to_parquet.py` directly | [Running individual steps manually](#running-individual-steps-manually) |
+
+All three call the same underlying scripts — they differ only in who triggers them and when.
 
 ### Step 1 — Start the API (Terminal 1, keep running)
 
