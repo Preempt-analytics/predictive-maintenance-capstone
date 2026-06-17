@@ -40,24 +40,24 @@ That's a complete inference loop. If you also want drift detection and retrainin
 
 ## What this project does
 
-Predicts equipment failure and failure mode from real-time sensor readings before the machine stops working. Built on the [AI4I 2020 Predictive Maintenance Dataset](https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset) (UCI). The model is as much a deliverable as the pipeline that runs it.
+Predicts equipment failure and failure types from real-time sensor readings before the machine stops working. Built on the [AI4I 2020 Predictive Maintenance Dataset](https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset) (UCI). The model is as much a deliverable as the pipeline that runs it.
 
 **Research question:**
-_To what extent can a machine learning model predict equipment failure and failure mode from real-time sensor readings, and what kind of MLOps pipeline is optimal to support that?_
+_To what extent can a machine learning model predict equipment failure and failure types from real-time sensor readings, and what kind of MLOps pipeline is optimal to support that?_
 
 ---
 
 ## What the model predicts
 
-CNC-type industrial machine with five distinct failure modes:
+CNC-type industrial machine with five distinct failure types:
 
-| Code | Failure                  | Trigger                                       |
-| ---- | ------------------------ | --------------------------------------------- |
-| TWF  | Tool Wear Failure        | Tool exceeds wear threshold                   |
-| HDF  | Heat Dissipation Failure | Temperature differential too low at low RPM   |
-| PWF  | Power Failure            | Torque × speed outside safe power band        |
-| OSF  | Overstrain Failure       | Tool wear × torque exceeds strain limit       |
-| RNF  | Random Failure           | Unpredictable — ~0.1% of cases               |
+| Code | Failure                  | Trigger                                     |
+| ---- | ------------------------ | ------------------------------------------- |
+| TWF  | Tool Wear Failure        | Tool exceeds wear threshold                 |
+| HDF  | Heat Dissipation Failure | Temperature differential too low at low RPM |
+| PWF  | Power Failure            | Torque × speed outside safe power band      |
+| OSF  | Overstrain Failure       | Tool wear × torque exceeds strain limit     |
+| RNF  | Random Failure           | Unpredictable — ~0.1% of cases              |
 
 ---
 
@@ -119,11 +119,11 @@ The two loops are intentionally decoupled. The API serves the current `@producti
 
 The `data/` directory contains two files for the same dataset and one important distinction between them:
 
-| File | Format | Purpose | Modified by scripts? |
-|------|--------|---------|----------------------|
-| `ai4i2020.parquet` | Parquet (binary) | Active training dataset — grows with each retrain cycle | Yes — appended by `export_simulation_to_parquet.py` |
-| `ai4i2020.csv` | CSV (text) | Human-readable copy of the original UCI dataset | No — kept for inspection only |
-| `ai4i2020_baseline.csv` | CSV (text) | Frozen drift reference | No — never modified |
+| File                    | Format           | Purpose                                                 | Modified by scripts?                                |
+| ----------------------- | ---------------- | ------------------------------------------------------- | --------------------------------------------------- |
+| `ai4i2020.parquet`      | Parquet (binary) | Active training dataset — grows with each retrain cycle | Yes — appended by `export_simulation_to_parquet.py` |
+| `ai4i2020.csv`          | CSV (text)       | Human-readable copy of the original UCI dataset         | No — kept for inspection only                       |
+| `ai4i2020_baseline.csv` | CSV (text)       | Frozen drift reference                                  | No — never modified                                 |
 
 **Why Parquet for the pipeline?** Parquet is a compressed, columnar format — roughly 10× smaller than the equivalent CSV and significantly faster for pandas to load. All scripts (`modeling_pipeline.py`, `export_simulation_to_parquet.py`) read and write `ai4i2020.parquet`. DVC tracks this file.
 
@@ -160,7 +160,6 @@ dvc pull data/ai4i2020.parquet data/ai4i2020_baseline.csv
 export MLFLOW_TRACKING_URI=https://dagshub.com/YOUR_USERNAME/predictive-maintenance-capstone.mlflow
 export MLFLOW_TRACKING_USERNAME=YOUR_DAGSHUB_USERNAME
 export MLFLOW_TRACKING_PASSWORD=YOUR_DAGSHUB_TOKEN
-
 ```
 
 > `data/simulation.db` is created automatically the first time the simulator runs — no manual step needed.
@@ -218,11 +217,11 @@ What `--detect-drift --export-on-drift` does automatically after the simulation 
 
 **Simulation modes:**
 
-| Flag | Failure rate | When to use |
-|------|-------------|-------------|
-| `--mode normal` | Stable 3.4% | Routine data collection; meaningful for drift detection |
-| `--mode gradual-drift` | 3.4% → 25% | Simulates equipment ageing over time |
-| `--mode sudden-spike` | 3.4% then 40% | Stress-testing the retrain pipeline; demos |
+| Flag                   | Failure rate  | When to use                                             |
+| ---------------------- | ------------- | ------------------------------------------------------- |
+| `--mode normal`        | Stable 3.4%   | Routine data collection; meaningful for drift detection |
+| `--mode gradual-drift` | 3.4% → 25%    | Simulates equipment ageing over time                    |
+| `--mode sudden-spike`  | 3.4% then 40% | Stress-testing the retrain pipeline; demos              |
 
 > All modes support `--detect-drift` and `--export-on-drift`. Non-normal modes will note that drift is expected and continue — this is intentional for testing the full retrain loop.
 
@@ -333,12 +332,12 @@ python scripts/promote_model.py --model-name predictive-maintenance-multiclass -
 
 The retrain workflow (`.github/workflows/retrain.yml`) runs on GitHub-hosted Ubuntu runners. It requires five repository secrets:
 
-| Secret | Value |
-|--------|-------|
-| `DAGSHUB_USERNAME` | Your DagsHub username |
-| `DAGSHUB_TOKEN` | Your DagsHub access token |
-| `MLFLOW_TRACKING_URI` | `https://dagshub.com/USERNAME/REPO.mlflow` |
-| `API_URL` | *(optional)* Base URL of a deployed API — enables automatic model reload |
+| Secret                | Value                                                                    |
+| --------------------- | ------------------------------------------------------------------------ |
+| `DAGSHUB_USERNAME`    | Your DagsHub username                                                    |
+| `DAGSHUB_TOKEN`       | Your DagsHub access token                                                |
+| `MLFLOW_TRACKING_URI` | `https://dagshub.com/USERNAME/REPO.mlflow`                               |
+| `API_URL`             | _(optional)_ Base URL of a deployed API — enables automatic model reload |
 
 Add them at: **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**
 
@@ -359,12 +358,12 @@ The workflow watches `retrain.trigger`, not `data/ai4i2020.parquet.dvc`. Only a 
 
 ## Using DagsHub as a single source of truth
 
-| What | Where in DagsHub |
-|------|-----------------|
-| MLflow experiments and runs | `dagshub.com/USERNAME/REPO` → Experiments tab |
-| Model registry and `@production` alias | Experiments tab → Models |
-| DVC-tracked dataset versions | Files tab → `data/ai4i2020.parquet` → History |
-| GitHub Actions CI results | Connect repo via DagsHub repo Settings → Integrations |
+| What                                   | Where in DagsHub                                      |
+| -------------------------------------- | ----------------------------------------------------- |
+| MLflow experiments and runs            | `dagshub.com/USERNAME/REPO` → Experiments tab         |
+| Model registry and `@production` alias | Experiments tab → Models                              |
+| DVC-tracked dataset versions           | Files tab → `data/ai4i2020.parquet` → History         |
+| GitHub Actions CI results              | Connect repo via DagsHub repo Settings → Integrations |
 
 To surface GitHub Actions results in DagsHub: go to your DagsHub repo → **Settings → Integrations → GitHub Actions**. Once connected, each workflow run appears alongside the corresponding MLflow experiment.
 
@@ -373,8 +372,8 @@ To surface GitHub Actions results in DagsHub: go to your DagsHub repo → **Sett
 ## Team
 
 | Name | GitHub |
-|------|--------|
-| Nate | @x |
-| Ivo  | @y |
+| ---- | ------ |
+| Nate | @x     |
+| Ivo  | @y     |
 
 neuefische AI Engineering Bootcamp · Cohort 2026
