@@ -5,13 +5,16 @@ This module is the inference half of the two-loop architecture.
 
 Two-loop recap
 --------------
-  Inference loop  — client → POST /predict → this API → Production model → JSON response
+  Inference loop  — client → POST /predict → this API → both @production models → JSON response
   Retraining loop — simulation.db → export_simulation_to_parquet.py → dvc repro → new model
 
-The API's only job is to answer: "Given these sensor readings, will this machine fail?"
-It does not train, it does not store, it does not decide which model to use — MLflow's
-@production alias handles that. Promoting a new model version in the MLflow UI is enough
-to change what this server responds with on the next request.
+The API loads two models at startup:
+  predictive-maintenance-binary      — answers "will this machine fail?" (0/1 + probability)
+  predictive-maintenance-multiclass  — answers "which failure type?" (TWF / HDF / PWF / OSF / RNF)
+
+They work as a gate-and-detail pair:
+  Binary model fires first. If it predicts failure, the multiclass model identifies the type.
+  If binary predicts no failure, the multiclass model is never called and failure_type is null.
 
 Why FastAPI specifically?
 -------------------------
@@ -40,8 +43,7 @@ How to run
 
 Prerequisites
 -------------
-  1. A model tagged @production in the MLflow registry (same requirement as
-     the simulator — if the simulator runs, the API will load).
+  1. Both models tagged @production in the MLflow registry.
   2. MLFLOW_TRACKING_URI set in .env (already done from training setup).
   3. pip install fastapi uvicorn  (already in requirements.txt).
 """
@@ -67,14 +69,12 @@ from feature_transformation import FEATURES, FAILURE_TYPE_CLASSES, engineer_feat
 load_dotenv()  # reads MLFLOW_TRACKING_URI and credentials from the .env file
 
 
-# ── Which model to load ────────────────────────────────────────────────────────
-# os.getenv("MODEL_NAME", "predictive-maintenance-binary") means:
-#   → use the MODEL_NAME environment variable if set
-#   → otherwise fall back to "predictive-maintenance-binary"
-#
-# To switch to multiclass without changing code:
-#   MODEL_NAME=predictive-maintenance-multiclass uvicorn src.api:app
-MODEL_NAME = os.getenv("MODEL_NAME", "predictive-maintenance-binary")
+# ── Model registry names (integration contract) ────────────────────────────────
+# These names are fixed contracts shared with modeling_pipeline.py and the MLflow
+# registry. Changing either name here requires the same change in modeling_pipeline.py
+# and in the registry itself — see CLAUDE.md Contract 2.
+BINARY_MODEL     = "predictive-maintenance-binary"
+MULTICLASS_MODEL = "predictive-maintenance-multiclass"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -142,15 +142,15 @@ class PredictionResponse(BaseModel):
     # required field, FastAPI raises an error — catching bugs before the client sees them.
 
     machine_failure: int = Field(description="0 = normal, 1 = failure predicted.")
-    failure_probability: float = Field(description="Model confidence in the failure prediction.")
+    failure_probability: float = Field(description="Model confidence in the failure prediction (binary model).")
     failure_type: str | None = Field(                               # str | None means the field can be a string OR null
-        default=None,                                               # null for binary models; "hdf" / "twf" / etc. for multiclass
-        description="Predicted failure type (multiclass only). Null for binary models.",
+        default=None,                                               # null when no failure is predicted; populated when binary predicts 1
+        description="Predicted failure type from the multiclass model. Null when machine_failure=0.",
     )
-    model_name: str = Field(description="Registered model family that produced this prediction.")
+    model_name: str = Field(description="Binary model name — the primary gate for this prediction.")
     model_version: str | None = Field(
         default=None,
-        description="Version number from the MLflow registry, if resolvable.",
+        description="Binary model version from the MLflow registry.",
     )
 
 
@@ -175,15 +175,21 @@ class BatchResponse(BaseModel):
 class HealthResponse(BaseModel):
     """What /health sends back — tells callers whether the server is ready to predict."""
 
-    status: str = Field(description="'ok' if the model is loaded, 'degraded' if not.")
+    # Binary model fields (primary — the API cannot serve predictions without this)
+    status: str = Field(description="'ok' if binary model is loaded, 'degraded' if not.")
     model_loaded: bool
     model_name: str | None
     model_version: str | None = None
-    model_f1_score: float | None = None   # f1_test from the MLflow run that produced this version
+    model_f1_score: float | None = None
+
+    # Multiclass model fields (secondary — failure_type will be null if this is not loaded)
+    multiclass_loaded: bool = False
+    multiclass_version: str | None = None
+    multiclass_f1_score: float | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 2 — SHARED STATE (the loaded model lives here)
+# STEP 2 — SHARED STATE (the loaded models live here)
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # Problem: FastAPI calls your route functions fresh on every HTTP request.
@@ -191,12 +197,9 @@ class HealthResponse(BaseModel):
 # You can't load the ML model inside /predict — that would add ~2 seconds to
 # every single prediction as it downloads from MLflow each time.
 #
-# Solution: store the model in a module-level dict. Module-level variables
+# Solution: store both models in a module-level dict. Module-level variables
 # persist for the lifetime of the running process. Every route function can
 # read from app_state without reloading anything.
-#
-# Why a dict and not separate global variables?
-# A dict is easier to clear cleanly on shutdown and easier to reset in tests.
 
 app_state: dict = {}
 
@@ -205,67 +208,79 @@ app_state: dict = {}
 # STEP 3 — STARTUP AND SHUTDOWN (the lifespan function)
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# FastAPI needs a hook to run code once when the server starts (load the model)
+# FastAPI needs a hook to run code once when the server starts (load both models)
 # and once when it stops (clean up). The lifespan pattern is how FastAPI 0.93+
 # handles this — it replaces the older @app.on_event("startup") decorator.
 #
 # @asynccontextmanager turns this generator function into a context manager.
-# A generator function is one that contains `yield`. Everything before yield
-# runs at startup; everything after yield runs at shutdown. The server serves
-# requests during the yield — think of yield as "now open for business."
+# Everything before yield runs at startup; everything after yield runs at
+# shutdown. The server serves requests during the yield.
+
+def _load_one_model(uri: str, model_name: str, alias: str) -> tuple:
+    """Download one @production model from MLflow and return (model, version, f1).
+
+    Separated from lifespan() so reload can call the same logic without
+    duplicating the download-and-resolve pattern.
+
+    Returns (model, version, f1) on success, raises on failure.
+    """
+    model = mlflow.sklearn.load_model(uri)                         # slow step: downloads artifact from DagsHub
+    try:
+        client  = mlflow.MlflowClient()
+        mv      = client.get_model_version_by_alias(model_name, alias)
+        version = mv.version
+        f1      = client.get_run(mv.run_id).data.metrics.get("f1_test")
+    except Exception:
+        version = None                                             # not critical — version stays null in responses
+        f1      = None
+    return model, version, f1
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):           # FastAPI passes itself in; we don't use it, but the signature is required
 
-    # ── STARTUP: runs once before the first request ────────────────────────────
-    uri = f"models:/{MODEL_NAME}@production"
-    print(f"\n  Loading model: {uri} ...")
+    # ── STARTUP: load both models before the first request ────────────────────
+    # Binary model is the gate — the API cannot serve predictions without it.
+    # Multiclass model provides failure type detail — useful but not fatal if missing.
+    # Both are attempted unconditionally so a multiclass failure doesn't block binary.
 
+    binary_uri     = f"models:/{BINARY_MODEL}@production"
+    multiclass_uri = f"models:/{MULTICLASS_MODEL}@production"
+
+    print(f"\n  Loading model: {binary_uri} ...")
     try:
-        # mlflow.sklearn.load_model downloads the fitted sklearn Pipeline from
-        # DagsHub and deserialises it into memory. This is the slow step (~2s).
-        # Doing it here means every prediction request is fast (<10ms).
-        model = mlflow.sklearn.load_model(uri)
-
-        # Resolve the actual version number behind the @production alias.
-        # This is a separate network call, so it gets its own try/except —
-        # a failure here shouldn't prevent the model from serving predictions.
-        try:
-            client           = mlflow.MlflowClient()
-            mv               = client.get_model_version_by_alias(MODEL_NAME, "production")
-            resolved_version = mv.version                                    # e.g. "13"
-            run              = client.get_run(mv.run_id)                     # fetch the training run
-            resolved_f1      = run.data.metrics.get("f1_test")              # f1_test logged by modeling_pipeline.py
-        except Exception:
-            resolved_version = None         # version stays null in responses — not critical
-            resolved_f1      = None
-
-        # Write everything into app_state so route handlers can read it.
-        app_state["model"]           = model
-        app_state["model_name"]      = MODEL_NAME
-        app_state["model_version"]   = resolved_version
-        app_state["model_f1_score"]  = resolved_f1
-        app_state["model_loaded"]   = True
-        app_state["is_multiclass"]  = MODEL_NAME.endswith("-multiclass")  # used in run_prediction below
-        print(f"  Model ready: {MODEL_NAME}@production (version {resolved_version})")
-
+        model, version, f1 = _load_one_model(binary_uri, BINARY_MODEL, "production")
+        app_state["binary_model"]   = model
+        app_state["binary_version"] = version
+        app_state["binary_f1"]      = f1
+        app_state["binary_loaded"]  = True
+        print(f"  Model ready: {BINARY_MODEL}@production (version {version})")
     except Exception as exc:
-        # The server starts even if the model fails to load. This is intentional:
-        # /health will report "degraded" so ops can investigate, and /predict will
-        # return HTTP 503 with a clear message. The alternative — crashing at startup
-        # — makes the service harder to debug because logs disappear immediately.
-        app_state["model_loaded"] = False
-        app_state["model_name"]   = MODEL_NAME
-        app_state["error"]        = str(exc)
-        print(f"  WARNING: Could not load model from '{uri}'.")
+        app_state["binary_loaded"] = False
+        app_state["binary_error"]  = str(exc)
+        print(f"  WARNING: Could not load model from '{binary_uri}'.")
         print(f"  Fix: open the MLflow UI, find your best run, set alias 'production'.")
+        print(f"  Original error: {exc}")
+
+    print(f"\n  Loading model: {multiclass_uri} ...")
+    try:
+        model, version, f1 = _load_one_model(multiclass_uri, MULTICLASS_MODEL, "production")
+        app_state["multiclass_model"]   = model
+        app_state["multiclass_version"] = version
+        app_state["multiclass_f1"]      = f1
+        app_state["multiclass_loaded"]  = True
+        print(f"  Model ready: {MULTICLASS_MODEL}@production (version {version})")
+    except Exception as exc:
+        app_state["multiclass_loaded"] = False
+        app_state["multiclass_error"]  = str(exc)
+        print(f"  WARNING: Could not load multiclass model — failure_type will be null.")
         print(f"  Original error: {exc}")
 
     yield  # ← the server is now live and handling requests; everything below runs on shutdown
 
     # ── SHUTDOWN: runs once after the last request ─────────────────────────────
     app_state.clear()
-    print("\n  Server shutdown — model unloaded.")
+    print("\n  Server shutdown — models unloaded.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -279,8 +294,9 @@ async def lifespan(app: FastAPI):           # FastAPI passes itself in; we don't
 app = FastAPI(
     title="Preempt Analytics — Predictive Maintenance API",
     description=(
-        "Predicts machine failure from live sensor readings. "
-        "The active model is controlled by the @production alias in MLflow — "
+        "Predicts machine failure and failure type from live sensor readings. "
+        "Binary model answers 'will it fail?'; multiclass model answers 'which type?' "
+        "Both are controlled by the @production alias in MLflow — "
         "no code change required to promote a new version."
     ),
     version="0.1.0",
@@ -310,39 +326,46 @@ def reading_to_raw_dict(reading: SensorReading) -> dict:
     }
 
 
-def run_prediction(model, reading: SensorReading, is_multiclass: bool = False) -> tuple[int, str | None, float]:
-    """Run one sensor reading through feature engineering and the model.
+def run_prediction(
+    binary_model,
+    multiclass_model,
+    reading: SensorReading,
+) -> tuple[int, str | None, float]:
+    """Run one sensor reading through the gate-and-detail prediction pair.
 
-    Centralising this logic means /predict and /predict/batch always produce
-    identical results — they can't drift apart if inference logic changes.
+    The binary model fires first and acts as the gate:
+      - If it predicts no failure (0), the multiclass model is never called.
+        failure_type is null. One model inference per non-failure reading.
+      - If it predicts failure (1), the multiclass model identifies the type.
+        failure_type is populated with the most likely failure mode.
+
+    This separation is intentional: the binary model is optimised for the
+    fail/no-fail decision; the multiclass model is optimised for type attribution
+    given that a failure is occurring. Running multiclass on every reading would
+    ignore that specialisation.
 
     Returns: (predicted_failure, failure_type, failure_probability)
     """
     # Convert the Pydantic object → raw dict → single-row DataFrame → feature dict.
     # engineer_features() adds the three derived columns (power_kw, temp_diff, stress).
-    raw         = reading_to_raw_dict(reading)
-    df_features = engineer_features(pd.DataFrame([raw]))
+    raw    = reading_to_raw_dict(reading)
+    df_eng = engineer_features(pd.DataFrame([raw]))
 
-    # to_dict(orient="records") produces [{col: val, col: val, ...}] — a list with
-    # one dict per row. The sklearn DictVectorizer inside the pipeline expects exactly
-    # this format. A plain dict or a numpy array would raise a type error.
-    record = df_features[FEATURES].to_dict(orient="records")
+    # to_dict(orient="records") produces [{col: val, ...}] — a list with one dict
+    # per row. The sklearn DictVectorizer inside the pipeline expects this format.
+    record = df_eng[FEATURES].to_dict(orient="records")
 
-    if is_multiclass:
-        # Multiclass models output an integer class index (0–5).
-        # FAILURE_TYPE_CLASSES maps that index back to the human-readable label:
-        # e.g. 0 → "none", 1 → "hdf", 2 → "twf", etc.
-        pred_int     = int(model.predict(record)[0])
-        failure_type = FAILURE_TYPE_CLASSES[pred_int]               # e.g. "hdf"
-        predicted    = 0 if failure_type == "none" else 1           # 0 = no failure, 1 = any failure
-        proba_row    = model.predict_proba(record)[0]               # probabilities for all 6 classes
-        failure_prob = float(proba_row[pred_int])                   # probability of the predicted class
-    else:
-        # Binary models output 0 or 1. predict_proba returns [P(0), P(1)].
-        # Index [1] is P(failure) — that's the number we surface to the caller.
-        predicted    = int(model.predict(record)[0])
-        failure_prob = float(model.predict_proba(record)[0][1])     # [0] = first (only) row, [1] = P(failure)
-        failure_type = None
+    # Gate: binary model — fail (1) or no failure (0)
+    predicted    = int(binary_model.predict(record)[0])
+    failure_prob = float(binary_model.predict_proba(record)[0][1])  # P(failure)
+
+    # Detail: multiclass model only runs when the gate opens
+    failure_type = None
+    if predicted == 1 and multiclass_model is not None:
+        pred_int     = int(multiclass_model.predict(record)[0])
+        failure_type = FAILURE_TYPE_CLASSES[pred_int]
+        if failure_type == "none":
+            failure_type = None  # multiclass uncertain — binary result stands, type unknown
 
     return predicted, failure_type, failure_prob
 
@@ -359,68 +382,68 @@ def run_prediction(model, reading: SensorReading, is_multiclass: bool = False) -
 #   1. Validates the return value against the schema (catches bugs server-side).
 #   2. Strips any extra fields so callers only see what the schema defines.
 #
-# tags= groups endpoints in the /docs UI — "Operations" and "Predictions"
-# become collapsible sections in the Swagger interface.
-#
 # async def — makes the handler non-blocking. While one request waits on I/O
 # (e.g. a slow model call), the event loop serves other incoming requests.
-# For CPU-bound work (like model.predict) the gain is small, but it's the
-# FastAPI convention and costs nothing.
 
 @app.get("/health", response_model=HealthResponse, tags=["Operations"])
 async def health() -> HealthResponse:
     """Is the server running and ready to predict?
 
     Call this before sending predictions, or after a restart, to confirm
-    the model loaded successfully. HTTP 200 with status='degraded' means the
-    server is reachable but the model failed to load — check the server logs.
+    both models loaded successfully. status='degraded' means the binary model
+    failed to load — predictions will return 503. If only multiclass failed,
+    status is still 'ok' but failure_type will always be null in responses.
     """
     return HealthResponse(
-        status="ok" if app_state.get("model_loaded") else "degraded",
-        model_loaded=app_state.get("model_loaded", False),         # .get() returns False if key is missing (safer than direct access)
-        model_name=app_state.get("model_name"),
-        model_version=app_state.get("model_version"),
-        model_f1_score=app_state.get("model_f1_score"),
-
+        status           = "ok" if app_state.get("binary_loaded") else "degraded",
+        model_loaded     = app_state.get("binary_loaded", False),
+        model_name       = BINARY_MODEL,
+        model_version    = app_state.get("binary_version"),
+        model_f1_score   = app_state.get("binary_f1"),
+        multiclass_loaded  = app_state.get("multiclass_loaded", False),
+        multiclass_version = app_state.get("multiclass_version"),
+        multiclass_f1_score = app_state.get("multiclass_f1"),
     )
 
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Predictions"])
 async def predict(reading: SensorReading) -> PredictionResponse:
-    """Predict whether a single machine is about to fail.
+    """Predict whether a single machine is about to fail, and if so, which failure type.
 
     FastAPI automatically parses the JSON request body into a SensorReading
     object and validates every field before this function runs. If any field
     is missing or out of range, the caller gets HTTP 422 — your code never runs.
 
+    The binary model fires first. If it predicts failure, the multiclass model
+    identifies the failure type (TWF / HDF / PWF / OSF / RNF). If it predicts
+    no failure, failure_type is null and the multiclass model is not called.
+
     Use failure_probability (not just machine_failure) to set alert thresholds.
     A probability of 0.85 and 0.51 both return machine_failure=1, but one
     warrants immediate shutdown while the other warrants a follow-up inspection.
     """
-    # Guard clause: if the model didn't load at startup, refuse to predict.
-    # HTTPException stops execution immediately and sends an HTTP error response.
-    # status_code=503 means "Service Unavailable" — the server is up but not ready.
-    if not app_state.get("model_loaded"):
+    # Guard clause: the binary model is required — without it we cannot predict.
+    if not app_state.get("binary_loaded"):
         raise HTTPException(
             status_code=503,
             detail=(
-                "Model is not loaded. Check /health for details. "
+                "Binary model is not loaded. Check /health for details. "
                 "The server may still be starting up or the MLflow registry "
                 "may not have a model tagged @production."
             ),
         )
 
-    model                         = app_state["model"]
-    is_multiclass                 = app_state.get("is_multiclass", False)
-    predicted, failure_type, prob = run_prediction(model, reading, is_multiclass)
+    binary_model     = app_state["binary_model"]
+    multiclass_model = app_state.get("multiclass_model")  # None if multiclass failed to load
 
-    # FastAPI validates this return value against PredictionResponse before sending.
+    predicted, failure_type, prob = run_prediction(binary_model, multiclass_model, reading)
+
     return PredictionResponse(
-        machine_failure=predicted,
-        failure_probability=round(prob, 4),                        # 4 decimal places is precise enough for a probability
-        failure_type=failure_type,
-        model_name=app_state["model_name"],
-        model_version=app_state.get("model_version"),
+        machine_failure     = predicted,
+        failure_probability = round(prob, 4),                       # 4 decimal places is precise enough for a probability
+        failure_type        = failure_type,
+        model_name          = BINARY_MODEL,
+        model_version       = app_state.get("binary_version"),
     )
 
 
@@ -432,60 +455,76 @@ async def predict_batch(batch: BatchRequest) -> BatchResponse:
     network overhead. Send all buffered readings at once, get all predictions back.
     The predictions list is in the same order as the input readings list.
     """
-    if not app_state.get("model_loaded"):
-        raise HTTPException(status_code=503, detail="Model is not loaded. Check /health.")
+    if not app_state.get("binary_loaded"):
+        raise HTTPException(status_code=503, detail="Binary model is not loaded. Check /health.")
 
-    model         = app_state["model"]
-    is_multiclass = app_state.get("is_multiclass", False)
+    binary_model     = app_state["binary_model"]
+    multiclass_model = app_state.get("multiclass_model")
 
     predictions = []
     for reading in batch.readings:                                  # process each reading with the same logic as /predict
-        predicted, failure_type, prob = run_prediction(model, reading, is_multiclass)
+        predicted, failure_type, prob = run_prediction(binary_model, multiclass_model, reading)
         predictions.append(PredictionResponse(
-            machine_failure=predicted,
-            failure_probability=round(prob, 4),
-            failure_type=failure_type,
-            model_name=app_state["model_name"],
-            model_version=app_state.get("model_version"),
+            machine_failure     = predicted,
+            failure_probability = round(prob, 4),
+            failure_type        = failure_type,
+            model_name          = BINARY_MODEL,
+            model_version       = app_state.get("binary_version"),
         ))
 
     return BatchResponse(
-        predictions=predictions,
-        total_readings=len(batch.readings),
-        # Generator expression: iterates predictions, picks machine_failure from each, sums the 1s.
-        total_failures_predicted=sum(p.machine_failure for p in predictions),
+        predictions              = predictions,
+        total_readings           = len(batch.readings),
+        total_failures_predicted = sum(p.machine_failure for p in predictions),
     )
 
 
 @app.post("/model/reload", tags=["Operations"])
 async def reload_model() -> dict:
-    """Hot-swap the production model without restarting the server.
+    """Hot-swap both production models without restarting the server.
 
     When you promote a new model version in the MLflow UI, call this endpoint
-    and the very next prediction will use the updated model. No restart needed,
+    and the very next prediction will use the updated models. No restart needed,
     no downtime, no in-flight requests interrupted.
+
+    Each model is reloaded independently. If the new binary model fails to load,
+    the old binary model keeps serving — predictions continue uninterrupted.
+    If the new multiclass model fails, the old multiclass model is retained.
     """
-    uri = f"models:/{MODEL_NAME}@production"
+    result = {}
+
+    # ── Reload binary (primary gate) ──────────────────────────────────────────
+    binary_uri = f"models:/{BINARY_MODEL}@production"
     try:
-        model = mlflow.sklearn.load_model(uri)
-
-        try:
-            mv      = mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, "production")
-            version = mv.version
-        except Exception:
-            version = None
-
-        # Overwrite app_state in place — all subsequent requests immediately
-        # see the new model. The old model object is garbage-collected by Python.
-        app_state["model"]         = model
-        app_state["model_loaded"]  = True
-        app_state["model_version"] = version
-        app_state["is_multiclass"] = MODEL_NAME.endswith("-multiclass")
-
-        return {"status": "reloaded", "model": MODEL_NAME, "version": version}
-
+        model, version, f1 = _load_one_model(binary_uri, BINARY_MODEL, "production")
+        app_state["binary_model"]   = model    # overwrite in place — subsequent requests immediately see the new model
+        app_state["binary_loaded"]  = True
+        app_state["binary_version"] = version
+        app_state["binary_f1"]      = f1
+        result["binary"] = {"status": "reloaded", "version": version}
     except Exception as exc:
-        # Do NOT clear app_state — keep the old model serving predictions
-        # while the caller investigates what went wrong with the new version.
-        app_state["error"] = str(exc)
-        raise HTTPException(status_code=503, detail=f"Reload failed: {exc}")
+        app_state["binary_error"] = str(exc)   # keep old model serving — do not clear binary_model
+        result["binary"] = {"status": "failed", "error": str(exc)}
+
+    # ── Reload multiclass (detail layer) ─────────────────────────────────────
+    multiclass_uri = f"models:/{MULTICLASS_MODEL}@production"
+    try:
+        model, version, f1 = _load_one_model(multiclass_uri, MULTICLASS_MODEL, "production")
+        app_state["multiclass_model"]   = model
+        app_state["multiclass_loaded"]  = True
+        app_state["multiclass_version"] = version
+        app_state["multiclass_f1"]      = f1
+        result["multiclass"] = {"status": "reloaded", "version": version}
+    except Exception as exc:
+        app_state["multiclass_error"] = str(exc)
+        result["multiclass"] = {"status": "failed", "error": str(exc)}
+
+    # Surface an HTTP error only if the binary model (the gate) failed.
+    # A multiclass failure is logged in the result but does not block the response.
+    if result["binary"]["status"] == "failed":
+        raise HTTPException(
+            status_code=503,
+            detail=f"Binary model reload failed: {result['binary']['error']}",
+        )
+
+    return result

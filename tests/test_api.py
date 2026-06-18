@@ -7,7 +7,6 @@
 # checks the contract directly, without needing a live MLflow connection or a
 # real model — see "Skipping the real model" below for how that's done.
 
-import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,7 +14,7 @@ import api
 from feature_transformation import FAILURE_TYPE_CLASSES
 
 # ── Skipping the real model ─────────────────────────────────────────────────
-# api.lifespan() only loads a model from MLflow when the app actually starts,
+# api.lifespan() only loads models from MLflow when the app actually starts,
 # which happens if TestClient is used as "with TestClient(app) as client:".
 # Using it WITHOUT the "with" block means lifespan never runs — app_state
 # stays whatever we set it to by hand. That keeps this test fast, offline,
@@ -32,7 +31,7 @@ VALID_READING = {
 
 
 class FakeBinaryModel:
-    """Stands in for a loaded MLflow sklearn Pipeline — binary target."""
+    """Fake binary model — always predicts no failure (0)."""
 
     def predict(self, record):
         return [0]                     # "no failure"
@@ -41,14 +40,27 @@ class FakeBinaryModel:
         return [[0.9, 0.1]]             # [P(no failure), P(failure)]
 
 
+class FakeFailureBinaryModel:
+    """Fake binary model — always predicts failure (1).
+
+    Used in tests that need the multiclass gate to open — failure_type
+    is only populated when the binary model returns 1.
+    """
+
+    def predict(self, record):
+        return [1]                     # "failure predicted"
+
+    def predict_proba(self, record):
+        return [[0.1, 0.9]]             # [P(no failure), P(failure)]
+
+
 class FakeMulticlassModel:
-    """Stands in for a loaded MLflow sklearn Pipeline — multiclass target."""
+    """Fake multiclass model — always predicts class index 2."""
 
     def predict(self, record):
         return [2]                     # index into FAILURE_TYPE_CLASSES
 
     def predict_proba(self, record):
-        # One probability per class in FAILURE_TYPE_CLASSES, summing to 1.
         return [[0.05, 0.05, 0.8, 0.05, 0.05]]
 
 
@@ -57,49 +69,73 @@ def client():
     return TestClient(api.app)         # no "with" — lifespan/MLflow never runs
 
 
-def test_predict_binary_returns_expected_shape(client):
+def test_predict_binary_no_failure(client):
+    # When binary predicts 0, failure_type must be null regardless of multiclass.
     api.app_state.clear()
     api.app_state.update({
-        "model":          FakeBinaryModel(),
-        "model_name":     "predictive-maintenance-binary",
-        "model_version":  "7",
-        "model_f1_score": 0.91,
-        "model_loaded":   True,
-        "is_multiclass":  False,
+        "binary_model":   FakeBinaryModel(),
+        "binary_version": "17",
+        "binary_f1":      0.91,
+        "binary_loaded":  True,
+        "multiclass_model":   FakeMulticlassModel(),
+        "multiclass_version": "18",
+        "multiclass_loaded":  True,
     })
 
     response = client.post("/predict", json=VALID_READING)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["machine_failure"] in (0, 1)
+    assert body["machine_failure"] == 0
     assert 0.0 <= body["failure_probability"] <= 1.0
-    assert body["failure_type"] is None          # null for binary models
+    assert body["failure_type"] is None          # gate closed — multiclass never called
     assert body["model_name"] == "predictive-maintenance-binary"
 
 
-def test_predict_multiclass_decodes_failure_type(client):
+def test_predict_failure_populates_failure_type(client):
+    # When binary predicts failure (1), multiclass should identify the type.
     api.app_state.clear()
     api.app_state.update({
-        "model":          FakeMulticlassModel(),
-        "model_name":     "predictive-maintenance-multiclass",
-        "model_version":  "3",
-        "model_f1_score": 0.65,
-        "model_loaded":   True,
-        "is_multiclass":  True,
+        "binary_model":   FakeFailureBinaryModel(),
+        "binary_version": "17",
+        "binary_f1":      0.91,
+        "binary_loaded":  True,
+        "multiclass_model":   FakeMulticlassModel(),
+        "multiclass_version": "18",
+        "multiclass_loaded":  True,
     })
 
     response = client.post("/predict", json=VALID_READING)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["failure_type"] == FAILURE_TYPE_CLASSES[2]   # "osf"
+    assert body["machine_failure"] == 1
+    assert body["failure_type"] == FAILURE_TYPE_CLASSES[2]   # multiclass predicted index 2
 
 
-def test_predict_returns_503_when_model_not_loaded(client):
+def test_predict_failure_without_multiclass(client):
+    # If multiclass is not loaded, failure_type stays null even when binary predicts failure.
     api.app_state.clear()
-    api.app_state["model_loaded"] = False
-    api.app_state["model_name"]   = "predictive-maintenance-binary"
+    api.app_state.update({
+        "binary_model":   FakeFailureBinaryModel(),
+        "binary_version": "17",
+        "binary_f1":      0.91,
+        "binary_loaded":  True,
+        "multiclass_loaded": False,     # multiclass not available
+    })
+
+    response = client.post("/predict", json=VALID_READING)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["machine_failure"] == 1
+    assert body["failure_type"] is None          # graceful degradation
+
+
+def test_predict_returns_503_when_binary_not_loaded(client):
+    # Without the binary model (the gate), the API cannot predict at all.
+    api.app_state.clear()
+    api.app_state["binary_loaded"] = False
 
     response = client.post("/predict", json=VALID_READING)
 
