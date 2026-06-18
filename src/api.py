@@ -55,9 +55,24 @@ from pathlib import Path
 
 import mlflow
 import pandas as pd
+import xgboost as xgb
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException  # HTTPException lets you send HTTP error responses (404, 503, etc.)
 from pydantic import BaseModel, Field       # Pydantic handles request/response validation automatically
+
+# ── XGBoost / scikit-learn 1.8 compatibility patch ────────────────────────────
+# xgboost==2.0.3 predates sklearn 1.8's tag-based estimator typing.
+# sklearn.base.is_classifier(XGBClassifier()) incorrectly returns False, so
+# CalibratedClassifierCV's predict_proba raises "Got a regressor" when loading
+# a calibrated XGBoost model. Patching the CLASS (not an instance) fixes every
+# deserialized XGBClassifier — cloning inside CalibratedClassifierCV would not
+# preserve an instance-level patch. Remove once xgboost >= 2.1 is in use.
+_original_xgb_tags = xgb.XGBClassifier.__sklearn_tags__
+def _patched_xgb_tags(self):
+    tags = _original_xgb_tags(self)
+    tags.estimator_type = "classifier"
+    return tags
+xgb.XGBClassifier.__sklearn_tags__ = _patched_xgb_tags
 
 # ── Shared feature engineering ─────────────────────────────────────────────────
 # sys.path.insert ensures Python can find feature_transformation.py whether you
