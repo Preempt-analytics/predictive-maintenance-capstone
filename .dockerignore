@@ -27,7 +27,6 @@ __pycache__
 # ── Development files not needed at runtime ───────────────────────────────────
 notebooks/
 archive/
-docs/
 *.ipynb
 .ipynb_checkpoints/
 

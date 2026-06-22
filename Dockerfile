@@ -62,21 +62,21 @@ COPY src/        ./src/
 COPY scripts/    ./scripts/
 COPY params.yaml .
 
-# TODO B — Data: the training CSV is DVC-tracked and lives on DagsHub, not in git.
-# The container needs the CSV to exist at data/ai4i2020.csv for the API to load
+# TODO B — Data: the training Parquet is DVC-tracked and lives on DagsHub, not in git.
+# The container needs the data to exist at data/ai4i2020.parquet for the API to load
 # a model and for drift detection to work.
 #
 # Two options — pick one:
 #
 #   Option 1 — Mount at runtime (recommended for development):
 #     Add a volume in docker-compose.yml that maps your local ./data to /app/data.
-#     The CSV is never baked into the image. Changes on the host are visible
+#     The Parquet file is never baked into the image. Changes on the host are visible
 #     immediately without rebuilding. See docker-compose.yml for where to add this.
 #
 #   Option 2 — Pull at build time (for a fully self-contained image):
 #     Add these lines before CMD:
 #       COPY .dvc/  ./.dvc/
-#       RUN dvc pull data/ai4i2020.csv data/ai4i2020_baseline.csv
+#       RUN dvc pull data/ai4i2020.parquet data/ai4i2020_baseline.csv
 #     Requires DVC credentials to be available at build time (risky — credentials
 #     in build args can leak into image history). Only use for CI/CD pipelines
 #     where you control the build environment.
