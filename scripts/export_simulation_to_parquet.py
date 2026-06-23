@@ -134,6 +134,7 @@ Usage
   python scripts/export_simulation_to_parquet.py --purge --push
 """
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -375,6 +376,22 @@ def _push_to_remote(data_path: Path, n_rows: int, trigger_retrain: bool = False)
         (["git", "commit", "-m", commit_msg],           "Committing"),
         (["git", "push"],                               "Pushing to GitHub"),
     ]
+
+    # ── Demo container: configure git remote from environment ─────────────────
+    # Inside the Docker monitor container, .git is mounted from the host
+    # (see docker-compose.yml) but has no embedded credentials. GIT_REMOTE_URL
+    # in .env.demo contains the PAT-authenticated HTTPS URL for the demo repo:
+    #   https://<github-pat>@github.com/<org>/<demo-repo>.git
+    # Setting it here overrides origin before the push so git authenticates
+    # without needing SSH keys configured inside the container.
+    # Outside Docker (local development), GIT_REMOTE_URL is unset and this
+    # block is skipped — git uses whatever credentials you have configured.
+    git_remote_url = os.environ.get("GIT_REMOTE_URL")
+    if git_remote_url:
+        steps.insert(4, (
+            ["git", "remote", "set-url", "origin", git_remote_url],
+            "Configuring git remote",
+        ))
 
     for cmd, label in steps:
         click.echo(f"\n  → {label}...")

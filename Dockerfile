@@ -8,32 +8,38 @@
 #
 # HOW DOCKER BUILDS WORK — LAYER CACHING
 # Each instruction (FROM, COPY, RUN) creates a "layer". Docker caches layers
-# and only rebuilds from the first line that changed. This is why requirements.txt
-# is copied BEFORE the source code — if you only change a .py file, Docker
-# reuses the cached pip install layer and the rebuild takes seconds, not minutes.
+# and only rebuilds from the first line that changed. This is why system packages
+# are installed first, requirements.txt is copied second, and source code last —
+# things that change rarely are near the top; things that change often are near
+# the bottom. Changing a .py file reuses every layer above it.
 #
-# ONE IMAGE, TWO SERVICES
-# Both the API and the monitor use this same image. docker-compose.yml starts
-# the API with the default CMD below, and overrides it for the monitor service
-# with `command: python scripts/monitor.py`. One recipe, two uses.
+# ONE IMAGE, THREE SERVICES
+# The API, the monitor, and the simulator all use this same image.
+# docker-compose.yml starts the API with the default CMD below and overrides
+# it per service (monitor: python scripts/monitor.py, simulator: its own
+# entrypoint). One recipe, three uses.
 
 
 # ── Base image ────────────────────────────────────────────────────────────────
-# The base image is the starting point — it comes with an OS and Python
-# pre-installed so you don't have to set those up yourself.
+# python:3.11-slim is a stripped Debian image (~130 MB vs ~900 MB for the full
+# image). It has no C compilers, but our wheels are pre-compiled on PyPI so
+# that is fine. If a package ever fails with "missing header", add:
+#   RUN apt-get update && apt-get install -y gcc g++ build-essential
 #
-# TODO A — Understand the image tag choices:
-#   python:3.11        → full Debian image, ~900 MB. Includes compilers and
-#                        system libraries you probably don't need at runtime.
-#   python:3.11-slim   → stripped Debian, ~130 MB. No compilers. Most pure-Python
-#                        packages install fine; packages with C extensions (like
-#                        numpy, scikit-learn) may need build tools added.
-#   python:3.11-alpine → even smaller, but a different libc — often breaks
-#                        scientific Python packages. Avoid for ML projects.
-#
-# We use slim. If a package fails to install with a "missing header" error,
-# add:  RUN apt-get update && apt-get install -y gcc g++ build-essential
+# Avoid python:3.11-alpine — it uses a different C library (musl instead of
+# glibc) that breaks numpy, scikit-learn, and other scientific packages.
 FROM python:3.11-slim
+
+
+# ── System packages ───────────────────────────────────────────────────────────
+# git is not included in the slim image but is required by the monitor service:
+# when drift is detected, export_simulation_to_parquet.py runs git commit and
+# git push to update retrain.trigger and fire the GitHub Actions workflow.
+# --no-install-recommends keeps the layer small by skipping optional extras.
+# The rm cleans up the apt cache so it is not frozen into the image layer.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 
 
 # ── Working directory ─────────────────────────────────────────────────────────
@@ -56,37 +62,31 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Source code ───────────────────────────────────────────────────────────────
 # Copy only the directories the running application actually needs.
-# We deliberately exclude notebooks/, archive/, and docs/ — they are not needed
-# at runtime and would bloat the image unnecessarily.
+# notebooks/ is excluded — it is not needed at runtime and would bloat the image.
 COPY src/        ./src/
 COPY scripts/    ./scripts/
 COPY params.yaml .
 
-# TODO B — Data: the training Parquet is DVC-tracked and lives on DagsHub, not in git.
-# The container needs the data to exist at data/ai4i2020.parquet for the API to load
-# a model and for drift detection to work.
+
+# ── Data directory ────────────────────────────────────────────────────────────
+# The data/ directory is NOT baked into the image — it is provided at runtime
+# via a Docker volume (see docker-compose.yml: ./data:/app/data).
 #
-# Two options — pick one:
+# Development: the volume maps your local data/ folder into the container.
+#   ai4i2020_baseline.csv is pulled from DagsHub once via `dvc pull`.
+#   simulation.db is created automatically on the first simulator run.
 #
-#   Option 1 — Mount at runtime (recommended for development):
-#     Add a volume in docker-compose.yml that maps your local ./data to /app/data.
-#     The Parquet file is never baked into the image. Changes on the host are visible
-#     immediately without rebuilding. See docker-compose.yml for where to add this.
+# Demo repo: data/ is committed directly (baseline CSV is small and frozen),
+#   so cloning the demo repo gives the container everything it needs without
+#   any dvc pull step. simulation.db is still created automatically.
 #
-#   Option 2 — Pull at build time (for a fully self-contained image):
-#     Add these lines before CMD:
-#       COPY .dvc/  ./.dvc/
-#       RUN dvc pull data/ai4i2020.parquet data/ai4i2020_baseline.csv
-#     Requires DVC credentials to be available at build time (risky — credentials
-#     in build args can leak into image history). Only use for CI/CD pipelines
-#     where you control the build environment.
-#
-# For now, we create the directory so the path exists at startup:
+# We create the directory here so the path exists at startup even before the
+# volume is mounted — avoids a FileNotFoundError on first boot.
 RUN mkdir -p data reports
 
 
 # ── Python path ───────────────────────────────────────────────────────────────
-# sensor_simulator.py imports feature_transformation directly:
+# sensor_simulator.py and api.py import from feature_transformation directly:
 #   from feature_transformation import engineer_features
 # That import only works if Python can find feature_transformation.py on its path.
 # Setting PYTHONPATH to include /app/src makes every module in src/ importable
@@ -98,15 +98,12 @@ ENV PYTHONPATH=/app/src
 # EXPOSE documents which port the container listens on. It does not actually
 # open the port — that happens in docker-compose.yml under `ports:`.
 # Think of EXPOSE as a label for humans and tooling, not a firewall rule.
-#
-# TODO C — What port does uvicorn listen on in this project?
-# Hint: look at the CMD below. The port here should match.
 EXPOSE 8000
 
 
 # ── Default command ───────────────────────────────────────────────────────────
 # CMD is what runs when `docker compose up` starts this container.
-# The monitor service overrides this in docker-compose.yml with its own command.
+# The monitor and simulator services override this in docker-compose.yml.
 #
 # Why 0.0.0.0 and not 127.0.0.1?
 # Inside a container, 127.0.0.1 means "this container only" — requests from

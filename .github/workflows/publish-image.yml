@@ -1,0 +1,81 @@
+# .github/workflows/publish-image.yml
+#
+# WHY THIS FILE EXISTS
+# This workflow builds the Docker image and publishes it to GitHub Container
+# Registry (ghcr.io) on every push to main. The demo repo references this
+# pre-built image so demo users never need to run `docker build` locally —
+# they just `docker compose up` and Docker pulls the image automatically.
+#
+# WHERE THE IMAGE ENDS UP
+# ghcr.io/preempt-analytics/predictive-maintenance-capstone:latest
+#
+# GitHub Container Registry is free for public repos. No external account or
+# secret is needed — the workflow uses the built-in GITHUB_TOKEN that GitHub
+# provides automatically to every Actions run.
+#
+# HOW TO VERIFY IT WORKED
+# After this workflow runs: GitHub repo → Packages (right sidebar) → you should
+# see the image listed. The demo repo's docker-compose.yml references this URL.
+
+name: Publish Docker Image
+
+on:
+  push:
+    branches:
+      - main    # rebuild and publish every time main is updated
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository expands to "org/repo" (e.g. preempt-analytics/predictive-maintenance-capstone).
+  # Combined with the registry this becomes the full image name.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read   # needed to check out the repo
+      packages: write  # needed to push to GitHub Container Registry
+
+    steps:
+      # ── Step 1: Check out the code ─────────────────────────────────────────
+      # Standard first step — checks out the repo so subsequent steps can
+      # read the Dockerfile and source code.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Authenticate with GitHub Container Registry ────────────────
+      # docker/login-action handles the `docker login ghcr.io` step.
+      # GITHUB_TOKEN is injected automatically by GitHub Actions — no secret
+      # to configure. github.actor is the user or bot that triggered the push.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Step 3: Extract metadata for the image tag ─────────────────────────
+      # docker/metadata-action generates the image tags and labels automatically.
+      # We always tag the image as :latest so the demo repo can pull it without
+      # knowing the exact commit SHA.
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+
+      # ── Step 4: Build and push ─────────────────────────────────────────────
+      # docker/build-push-action builds the image using our Dockerfile and
+      # pushes it to ghcr.io in a single step. `context: .` means the build
+      # context is the repo root — the same as running `docker build .` locally.
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
