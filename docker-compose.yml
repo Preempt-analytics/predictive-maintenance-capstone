@@ -24,20 +24,18 @@
 #   Start everything:          docker compose up
 #   Start in background:       docker compose up -d
 #   Stop everything:           docker compose down
-#   Rebuild after code change: docker compose up --build
+
+# DEV  Rebuild after code change: docker compose up --build
 #   Run the simulator once:    docker compose run --rm simulator --mode sudden-spike --n-readings 500
 #   View logs:                 docker compose logs -f
 #   View one service's logs:   docker compose logs -f api
-
 
 # ── Version ───────────────────────────────────────────────────────────────────
 # The compose file format version. 3.9 is stable and widely supported.
 # Do not confuse this with the Docker Engine version.
 version: "3.9"
 
-
 services:
-
   # ── API ─────────────────────────────────────────────────────────────────────
   # The FastAPI serving layer. Loads the @production model at startup and
   # answers POST /predict requests. This is the service external callers use.
@@ -52,7 +50,7 @@ services:
       # "host_port:container_port" — maps port 8000 on your machine to port 8000
       # inside the container. Change the left number to run on a different host port
       # (e.g. "8080:8000" if port 8000 is taken on your machine).
-      - "8000:8000"
+      - "8070:8000"
 
     env_file:
       # Injects environment variables into the container from a file.
@@ -75,7 +73,7 @@ services:
       # simulation.db lives at data/simulation.db, so the single data/ volume
       # below covers it. All three services share the same host directory —
       # the simulator writes readings, the monitor reads them for drift detection.
-      - ./data:/app/data       # simulation.db + baseline CSV
+      - ./data:/app/data # simulation.db + baseline CSV
       - ./reports:/app/reports # drift reports written here are visible on the host
 
     healthcheck:
@@ -83,14 +81,19 @@ services:
       # "healthy" when it returns HTTP 200. The monitor and simulator use
       # depends_on: condition: service_healthy — they will not start until
       # this check passes, preventing predictions against an unloaded model.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s    # how often to check
-      timeout: 10s     # how long to wait for a response
-      retries: 3       # how many failures before marking unhealthy
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8070/health')",
+        ]
+      interval: 30s # how often to check
+      timeout: 10s # how long to wait for a response
+      retries: 3 # how many failures before marking unhealthy
       start_period: 15s # grace period on startup before checks begin
 
-    restart: unless-stopped  # restart automatically if the container crashes
-
+    restart: unless-stopped # restart automatically if the container crashes
 
   # ── Monitor ──────────────────────────────────────────────────────────────────
   # Runs detect_drift.py on a schedule. When drift is detected it exports the
@@ -101,10 +104,10 @@ services:
     # DEMO REPO: same swap as the api service — replace build with image.
     # image: ghcr.io/preempt-analytics/predictive-maintenance-capstone:latest
     container_name: preempt-monitor
-    command: ["python", "scripts/monitor.py"]  # overrides the CMD in Dockerfile
+    command: ["python", "scripts/monitor.py"] # overrides the CMD in Dockerfile
 
     env_file:
-      - .env  # needs MLflow credentials for model loading + git credentials for push
+      - .env # needs MLflow credentials for model loading + git credentials for push
 
     environment:
       # Git needs an author identity to create commits inside the container.
@@ -117,8 +120,8 @@ services:
       - GIT_COMMITTER_EMAIL=${GIT_AUTHOR_EMAIL:-bot@preempt-analytics.com}
 
     volumes:
-      - ./data:/app/data     # simulation.db + baseline CSV
-      - ./reports:/app/reports  # drift HTML reports
+      - ./data:/app/data # simulation.db + baseline CSV
+      - ./reports:/app/reports # drift HTML reports
 
       # ── Git access for the retrain push ────────────────────────────────────
       # The Dockerfile excludes .git (see .dockerignore), so the container has
@@ -141,10 +144,9 @@ services:
 
     depends_on:
       api:
-        condition: service_healthy  # wait for the API to be ready before starting
+        condition: service_healthy # wait for the API to be ready before starting
 
     restart: unless-stopped
-
 
   # ── Simulator ────────────────────────────────────────────────────────────────
   # The simulator is NOT a long-running service — it is a one-shot command you
@@ -164,22 +166,23 @@ services:
     # The entrypoint is the fixed part of the command — sensor_simulator.py with
     # the API URL pre-configured. Arguments passed via `docker compose run` are
     # appended after this (e.g. --mode normal --n-readings 500).
-    #
+
     # Why http://api:8000 and not http://localhost:8000?
     # Inside Docker's network, containers reach each other by service name, not
     # by localhost. "api" resolves to the api container's internal IP address.
     # Using localhost here would mean "this simulator container" — the wrong target.
-    entrypoint: ["python", "src/sensor_simulator.py", "--api-url", "http://api:8000"]
+    entrypoint:
+      ["python", "src/sensor_simulator.py", "--api-url", "http://api:8000"]
 
     env_file:
       - .env
 
     volumes:
-      - ./data:/app/data  # simulation.db is written here by the simulator
+      - ./data:/app/data # simulation.db is written here by the simulator
 
     depends_on:
       api:
-        condition: service_healthy  # simulator needs the API running to send predictions
+        condition: service_healthy # simulator needs the API running to send predictions
 
     profiles:
       # "profiles" means this service is NOT started by `docker compose up`.

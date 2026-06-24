@@ -36,6 +36,10 @@ How to run
 
     uvicorn src.api:app --reload
 
+    # to specify a different port
+    
+    python -m uvicorn src.api:app --reload --port 8001 
+
   The --reload flag restarts the server automatically when you edit api.py.
   Remove it in production. Default port is 8000.
 
