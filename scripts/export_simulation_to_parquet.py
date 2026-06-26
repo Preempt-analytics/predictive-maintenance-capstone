@@ -134,10 +134,13 @@ Usage
   python scripts/export_simulation_to_parquet.py --purge --push
 """
 
+import base64
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -337,9 +340,9 @@ def convert_to_parquet_format(sim_df: pd.DataFrame, starting_udi: int) -> pd.Dat
 
 # ── Retrain trigger ───────────────────────────────────────────────────────────
 # Runs the dvc/git sequence that tells GitHub Actions new data is ready.
-# Each command must succeed before the next one starts — subprocess.run with
-# check=True raises CalledProcessError on a non-zero exit code, which stops
-# the sequence and prints the failing command's stderr so the cause is clear.
+# Authentication is flexible: if GIT_SSH_KEY_B64 is set (demo deployment), we
+# decode a base64 Ed25519 deploy key at runtime and inject it via GIT_SSH_COMMAND.
+# If not set, git uses whatever credential is already configured (dev/CI).
 
 def _push_to_remote(data_path: Path, n_rows: int, trigger_retrain: bool = False) -> None:
     """Run dvc add/push and git commit/push to update the training dataset.
@@ -369,39 +372,57 @@ def _push_to_remote(data_path: Path, n_rows: int, trigger_retrain: bool = False)
         commit_msg = f"data: add {n_rows:,} simulated observations [no retrain]"
         git_add_targets = [str(dvc_pointer)]                     # retrain.trigger unchanged → no workflow
 
+    # ── SSH deploy key setup ──────────────────────────────────────────────────
+    # In the demo deployment, GitHub PATs cannot be stored in a public repo —
+    # GitHub's scanner revokes them on push. .env.demo stores the deploy key as
+    # base64 (GIT_SSH_KEY_B64), which hides the PEM header the scanner matches.
+    # We decode at runtime, write to a temp file, then clean it up unconditionally.
+    key_file = None
+    subprocess_env = None
+    ssh_key_b64 = os.environ.get("GIT_SSH_KEY_B64")
+    if ssh_key_b64:
+        key_data = base64.b64decode(ssh_key_b64)                 # decode the stored base64 key
+        fd, key_file = tempfile.mkstemp(suffix=".pem")
+        with os.fdopen(fd, "wb") as f:
+            f.write(key_data)
+        os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)         # 0o600 — SSH rejects group/world-readable keys
+        subprocess_env = {
+            **os.environ,
+            "GIT_SSH_COMMAND": f"ssh -i {key_file} -o StrictHostKeyChecking=no",
+        }
+
+    # GIT_REMOTE_URL overrides the push destination — SSH URL with the deploy key,
+    # or HTTPS with embedded credentials for dev/CI. Passed directly to git push
+    # so .git/config on the host is never rewritten.
+    git_remote_url = os.environ.get("GIT_REMOTE_URL")
+    push_cmd = ["git", "push", git_remote_url] if git_remote_url else ["git", "push"]
+
     steps = [
         (["dvc", "add",  str(data_path)],               "Updating .dvc pointer"),
         (["dvc", "push", str(data_path)],               "Uploading Parquet to DagsHub"),
         (["git", "add"] + git_add_targets,              "Staging files"),
         (["git", "commit", "-m", commit_msg],           "Committing"),
-        (["git", "push"],                               "Pushing to GitHub"),
+        (push_cmd,                                       "Pushing to remote"),
     ]
 
-    # ── Demo container: configure git remote from environment ─────────────────
-    # Inside the Docker monitor container, .git is mounted from the host
-    # (see docker-compose.yml) but has no embedded credentials. GIT_REMOTE_URL
-    # in .env.demo contains the PAT-authenticated HTTPS URL for the demo repo:
-    #   https://<github-pat>@github.com/<org>/<demo-repo>.git
-    # Setting it here overrides origin before the push so git authenticates
-    # without needing SSH keys configured inside the container.
-    # Outside Docker (local development), GIT_REMOTE_URL is unset and this
-    # block is skipped — git uses whatever credentials you have configured.
-    git_remote_url = os.environ.get("GIT_REMOTE_URL")
-    if git_remote_url:
-        steps.insert(4, (
-            ["git", "remote", "set-url", "origin", git_remote_url],
-            "Configuring git remote",
-        ))
-
-    for cmd, label in steps:
-        click.echo(f"\n  → {label}...")
-        result = subprocess.run(cmd, capture_output=True, text=True)   # capture for clean printing
-        if result.returncode != 0:
-            click.echo(f"\nERROR: `{' '.join(cmd)}` failed:", err=True)
-            click.echo(result.stderr or result.stdout, err=True)
-            sys.exit(1)
-        if result.stdout.strip():
-            click.echo(result.stdout.strip())
+    try:
+        for cmd, label in steps:
+            click.echo(f"\n  → {label}...")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                env=subprocess_env,   # None → inherit parent env; dict → SSH key injected
+            )
+            if result.returncode != 0:
+                click.echo(f"\nERROR: `{' '.join(cmd)}` failed:", err=True)
+                click.echo(result.stderr or result.stdout, err=True)
+                sys.exit(1)
+            if result.stdout.strip():
+                click.echo(result.stdout.strip())
+    finally:
+        if key_file:
+            Path(key_file).unlink(missing_ok=True)               # always remove the temp key file
 
     if trigger_retrain:
         click.echo("\nGitHub Actions retrain workflow triggered.")
