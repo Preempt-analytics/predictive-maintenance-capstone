@@ -581,21 +581,22 @@ def main(
         export_df.to_parquet(output, index=False)                     # write first batch
         click.echo(f"\nWrote {len(export_df):,} rows → {output}")
 
+    # ── Push to remote and trigger retraining ─────────────────────────────────
+    # Push runs BEFORE purge. _push_to_remote calls sys.exit(1) on any failure,
+    # so if the push fails the rows are never purged — the next monitor cycle
+    # retries with the same data. Purging before a successful push would silently
+    # discard data that was never uploaded.
+    if push:
+        _push_to_remote(output, len(export_df), trigger_retrain=retrain)
+
     # ── Purge ──────────────────────────────────────────────────────────────────
-    # Only runs after a confirmed write — never on dry-run.
-    # Deletes by the exact IDs loaded earlier, so rows written by a concurrent
-    # simulator run during export are never accidentally removed.
+    # Only runs after a confirmed write (and after a successful push when --push
+    # is set). Deletes by exact row IDs so concurrent simulator writes are safe.
     if purge:
         deleted = purge_exported_rows(db, sim_df["id"].tolist())
         click.echo(f"  Purged {deleted:,} rows from simulation.db")
 
-    # ── Push to remote and trigger retraining ─────────────────────────────────
-    # --push automates the dvc/git sequence that signals GitHub Actions to retrain.
-    # Without it, the steps are printed so the developer can run them manually —
-    # useful when you want to inspect the export before committing it.
-    if push:
-        _push_to_remote(output, len(export_df), trigger_retrain=retrain)
-    else:
+    if not push:
         click.echo("\nNext steps:")
         click.echo("  dvc add data/ai4i2020.parquet")
         click.echo("  dvc push data/ai4i2020.parquet")
